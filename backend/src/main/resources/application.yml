@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: codeagent-backend
+
+server:
+  address: 127.0.0.1
+  port: 18000
