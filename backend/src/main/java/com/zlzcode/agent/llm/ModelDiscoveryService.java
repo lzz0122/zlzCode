@@ -1,7 +1,6 @@
 package com.zlzcode.agent.llm;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.agent.contract.OpenAiConnectionInput;
 import com.zlzcode.agent.contract.OpenAiModel;
 import com.zlzcode.agent.contract.OpenAiModelListResponse;
@@ -23,11 +22,8 @@ import java.util.concurrent.TimeoutException;
 public class ModelDiscoveryService {
 
     private final WebClient webClient;
-    private final ObjectMapper objectMapper;
-
-    public ModelDiscoveryService(WebClient openAiWebClient, ObjectMapper objectMapper) {
+    public ModelDiscoveryService(WebClient openAiWebClient) {
         this.webClient = openAiWebClient;
-        this.objectMapper = objectMapper;
     }
 
     public Mono<OpenAiModelListResponse> listModels(OpenAiConnectionInput connection) {
@@ -46,10 +42,18 @@ public class ModelDiscoveryService {
                 })
                 .timeout(Duration.ofSeconds(15))
                 .map(this::parseModels)
-                .onErrorMap(TimeoutException.class,
-                        error -> new ModelDiscoveryException(504, "获取模型超时", true))
-                .onErrorMap(WebClientRequestException.class,
-                        error -> new ModelDiscoveryException(502, "无法连接 OpenAI Base URL", true));
+                .onErrorMap(error -> {
+                    if (error instanceof ModelDiscoveryException) {
+                        return error;
+                    }
+                    if (error instanceof TimeoutException) {
+                        return new ModelDiscoveryException(504, "获取模型超时", true);
+                    }
+                    if (error instanceof WebClientRequestException) {
+                        return new ModelDiscoveryException(502, "无法连接 OpenAI Base URL", true);
+                    }
+                    return new ModelDiscoveryException(502, "模型服务返回了无法识别的响应", false);
+                });
     }
 
     private RuntimeException statusError(HttpStatusCode status) {

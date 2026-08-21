@@ -59,10 +59,20 @@ public class OpenAiChatClient {
                             .concatMap(this::parseEvent);
                 })
                 .timeout(Duration.ofSeconds(120))
-                .onErrorMap(TimeoutException.class,
-                        error -> new OpenAiClientException("LLM_TIMEOUT", "OpenAI 请求超时", true))
-                .onErrorMap(WebClientRequestException.class,
-                        error -> new OpenAiClientException("LLM_CONNECTION_FAILED", "无法连接 OpenAI Base URL", true));
+                .takeUntil(signal -> signal instanceof ChatStreamSignal.Done)
+                .onErrorMap(error -> {
+                    if (error instanceof OpenAiClientException) {
+                        return error;
+                    }
+                    if (error instanceof TimeoutException) {
+                        return new OpenAiClientException("LLM_TIMEOUT", "OpenAI 请求超时", true);
+                    }
+                    if (error instanceof WebClientRequestException) {
+                        return new OpenAiClientException("LLM_CONNECTION_FAILED", "无法连接 OpenAI Base URL", true);
+                    }
+                    return new OpenAiClientException(
+                            "LLM_RESPONSE_INVALID", "模型返回了无效的流式响应", false);
+                });
     }
 
     private RuntimeException statusError(int status) {
