@@ -2,6 +2,7 @@ package com.zlzcode.agent.workspace;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -33,6 +34,7 @@ public class WorkspaceRegistry {
     private final Path stateFile;
     private final Map<String, AuthorizedWorkspace> workspaces = new ConcurrentHashMap<>();
 
+    @Autowired
     public WorkspaceRegistry(
             ObjectMapper objectMapper,
             @Value("${codeagent.workspace.state-file:}") String configuredStateFile) {
