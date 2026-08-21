@@ -36,3 +36,5 @@ The backend listens on `http://127.0.0.1:18000`. Its stage 0 health endpoint is:
 GET http://127.0.0.1:18000/health
 {"status":"ok"}
 ```
+
+Stage 1 adds the OpenAI-compatible model and single-turn endpoints. To use the backend directly from the Vite development server, set `VITE_AGENT_API_URL` to `http://127.0.0.1:18000`.
