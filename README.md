@@ -30,11 +30,11 @@ cd backend
 .\mvnw.cmd spring-boot:run
 ```
 
-The backend listens on `http://127.0.0.1:18000`. Its stage 0 health endpoint is:
+The backend listens on `http://127.0.0.1:8000`. Its stage 0 health endpoint is:
 
 ```text
-GET http://127.0.0.1:18000/health
+GET http://127.0.0.1:8000/health
 {"status":"ok"}
 ```
 
-Stage 1 adds the OpenAI-compatible model and single-turn endpoints. To use the backend directly from the Vite development server, set `VITE_AGENT_API_URL` to `http://127.0.0.1:18000`.
+Stage 1 adds the OpenAI-compatible model and single-turn endpoints. The Vite development server proxies API requests to `http://127.0.0.1:8000` by default; set `VITE_AGENT_API_URL` to that address when calling the backend directly.
