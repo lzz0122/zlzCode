@@ -3,6 +3,8 @@ package com.zlzcode.agent.api;
 import com.zlzcode.agent.contract.ApiErrorDetail;
 import com.zlzcode.agent.contract.ApiErrorResponse;
 import com.zlzcode.agent.contract.RequestContractException;
+import com.zlzcode.agent.workspace.DirectoryPickerUnavailableException;
+import com.zlzcode.agent.workspace.WorkspaceRegistryException;
 import com.zlzcode.agent.llm.ModelDiscoveryService.ModelDiscoveryException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -30,6 +32,20 @@ public class ApiExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleContract(RequestContractException exception) {
         return response(HttpStatus.UNPROCESSABLE_ENTITY,
                 "INVALID_REQUEST", "请求结构无效", false);
+    }
+
+    @ExceptionHandler(DirectoryPickerUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handlePicker(DirectoryPickerUnavailableException exception) {
+        return response(HttpStatus.SERVICE_UNAVAILABLE,
+                "DIRECTORY_PICKER_UNAVAILABLE", exception.getMessage(), true);
+    }
+
+    @ExceptionHandler(WorkspaceRegistryException.class)
+    public ResponseEntity<ApiErrorResponse> handleWorkspace(WorkspaceRegistryException exception) {
+        HttpStatus status = exception.code().contains("PERSISTENCE")
+                ? HttpStatus.SERVICE_UNAVAILABLE
+                : HttpStatus.UNPROCESSABLE_ENTITY;
+        return response(status, exception.code(), exception.getMessage(), exception.retryable());
     }
 
     @ExceptionHandler(ModelDiscoveryException.class)

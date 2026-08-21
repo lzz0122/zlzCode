@@ -69,6 +69,10 @@ public class WorkspaceOverviewService {
         }
     }
 
+    public Result list(Path workspaceRoot) {
+        return list(workspaceRoot == null ? "" : workspaceRoot.toString());
+    }
+
     private Entry entry(Path path) {
         String name = path.getFileName() == null ? "" : path.getFileName().toString();
         if (Files.isSymbolicLink(path)) return new Entry(name, "link");
