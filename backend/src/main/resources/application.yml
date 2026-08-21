@@ -1,6 +1,10 @@
 spring:
   application:
     name: codeagent-backend
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+    default-property-inclusion: non_null
 
 server:
   address: 127.0.0.1
