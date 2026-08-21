@@ -1,14 +1,19 @@
 package com.zlzcode.agent.agent;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.agent.contract.AgentEvent;
 import com.zlzcode.agent.contract.AgentRunRequest;
 import com.zlzcode.agent.contract.RequestContractException;
 import com.zlzcode.agent.llm.ChatStreamSignal;
 import com.zlzcode.agent.llm.OpenAiChatClient;
 import com.zlzcode.agent.llm.OpenAiClientException;
+import com.zlzcode.agent.llm.ToolDecision;
+import com.zlzcode.agent.workspace.WorkspaceOverviewService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.List;
@@ -18,48 +23,31 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class AgentRunService {
 
-    private final OpenAiChatClient chatClient;
+    private static final String TOOL_NAME = "list_workspace_entries";
+    private static final String TOOL_LABEL = "查看工作区根目录";
+    private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(2);
 
-    public AgentRunService(OpenAiChatClient chatClient) {
+    private final OpenAiChatClient chatClient;
+    private final WorkspaceOverviewService workspaceOverviewService;
+    private final ObjectMapper objectMapper;
+
+    public AgentRunService(
+            OpenAiChatClient chatClient,
+            WorkspaceOverviewService workspaceOverviewService,
+            ObjectMapper objectMapper) {
         this.chatClient = chatClient;
+        this.workspaceOverviewService = workspaceOverviewService;
+        this.objectMapper = objectMapper;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
         return Flux.defer(() -> {
             long startedAt = System.nanoTime();
-            AtomicBoolean upstreamDone = new AtomicBoolean(false);
-            AtomicReference<Integer> inputTokens = new AtomicReference<>();
-            AtomicReference<Integer> outputTokens = new AtomicReference<>();
-
-            Flux<AgentEvent> body = chatClient.stream(request)
-                    .<AgentEvent>handle((signal, sink) -> {
-                        if (signal instanceof ChatStreamSignal.Text text) {
-                            sink.next(new AgentEvent.TextDelta(text.value()));
-                        } else if (signal instanceof ChatStreamSignal.Usage usage) {
-                            inputTokens.set(usage.inputTokens());
-                            outputTokens.set(usage.outputTokens());
-                        } else if (signal instanceof ChatStreamSignal.Done) {
-                            upstreamDone.set(true);
-                        }
-                    })
-                    .takeUntil(event -> upstreamDone.get())
-                    .concatWith(Mono.<AgentEvent>defer(() -> {
-                        if (!upstreamDone.get()) {
-                            return Mono.<AgentEvent>error(new OpenAiClientException(
-                                    "LLM_STREAM_BROKEN", "OpenAI 流式响应意外中断", true));
-                        }
-                        long durationMs = Math.max(1L,
-                                Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
-                        return Mono.just(new AgentEvent.Completed(
-                                new AgentEvent.RunMetrics(1, durationMs,
-                                        inputTokens.get(), outputTokens.get()),
-                                List.of()));
-                    }));
-
             return Flux.concat(
-                            Flux.just(new AgentEvent.Status("正在连接 OpenAI"),
-                                    new AgentEvent.Status("正在生成回复")),
-                            body)
+                            Flux.just(new AgentEvent.Status("正在发送"),
+                                    new AgentEvent.Status("正在分析")),
+                            chatClient.decide(request)
+                                    .flatMapMany(decision -> executeDecision(request, decision, startedAt)))
                     .onErrorResume(OpenAiClientException.class, error -> Flux.just(
                             new AgentEvent.Error(error.safeMessage(), error.code(), error.retryable())))
                     .onErrorResume(RequestContractException.class, error -> Flux.just(
@@ -67,5 +55,133 @@ public class AgentRunService {
                     .onErrorResume(error -> Flux.just(
                             new AgentEvent.Error("Agent 运行发生内部错误", "INTERNAL_ERROR", false)));
         });
+    }
+
+    private Flux<AgentEvent> executeDecision(
+            AgentRunRequest request,
+            ToolDecision decision,
+            long startedAt) {
+        if (!decision.hasToolCall()) {
+            String content = decision.content();
+            if (content == null || content.isBlank()) {
+                return Flux.error(new OpenAiClientException(
+                        "LLM_RESPONSE_INVALID", "模型没有返回可显示文本或工具调用", false));
+            }
+            return Flux.just(
+                    new AgentEvent.TextDelta(content),
+                    completed(startedAt, 1, List.of()));
+        }
+
+        ToolDecision.ToolCall call = decision.toolCall();
+        if (call.id() == null || call.id().isBlank() || !"function".equals(call.type())) {
+            return Flux.error(new OpenAiClientException(
+                    "LLM_RESPONSE_INVALID", "模型返回了无效的工具调用", false));
+        }
+
+        return Flux.concat(
+                Flux.just(new AgentEvent.ToolStarted(call.id(), TOOL_LABEL, null)),
+                executeTool(request, call)
+                        .flatMapMany(outcome -> Flux.concat(
+                                Flux.just(new AgentEvent.ToolFinished(
+                                        call.id(), outcome.ok() ? "completed" : "failed",
+                                        outcome.presentation())),
+                                Flux.just(new AgentEvent.Status("正在整理结果")),
+                                streamFinal(request, decision, call, outcome, startedAt))));
+    }
+
+    private Mono<ToolOutcome> executeTool(
+            AgentRunRequest request,
+            ToolDecision.ToolCall call) {
+        if (!TOOL_NAME.equals(call.name())) {
+            return Mono.just(failure("TOOL_NOT_AVAILABLE", "未执行未知工具"));
+        }
+        if (!validEmptyArguments(call.arguments())) {
+            return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
+        }
+
+        return Mono.fromCallable(() -> workspaceOverviewService.list(request.workspace().path()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(TOOL_TIMEOUT)
+                .map(result -> new ToolOutcome(result.ok(), result.modelContent(), result.presentation()))
+                .onErrorReturn(failure("TOOL_TIMEOUT", "读取工作区超时"));
+    }
+
+    private Flux<AgentEvent> streamFinal(
+            AgentRunRequest request,
+            ToolDecision decision,
+            ToolDecision.ToolCall call,
+            ToolOutcome outcome,
+            long startedAt) {
+        AtomicBoolean upstreamDone = new AtomicBoolean(false);
+        AtomicBoolean emittedText = new AtomicBoolean(false);
+        AtomicReference<Integer> inputTokens = new AtomicReference<>();
+        AtomicReference<Integer> outputTokens = new AtomicReference<>();
+
+        Flux<AgentEvent> body = chatClient.streamFinal(request, decision, outcome.modelContent())
+                .<AgentEvent>handle((signal, sink) -> {
+                    if (signal instanceof ChatStreamSignal.Text text) {
+                        emittedText.set(true);
+                        sink.next(new AgentEvent.TextDelta(text.value()));
+                    } else if (signal instanceof ChatStreamSignal.Usage usage) {
+                        inputTokens.set(usage.inputTokens());
+                        outputTokens.set(usage.outputTokens());
+                    } else if (signal instanceof ChatStreamSignal.Done) {
+                        upstreamDone.set(true);
+                    }
+                })
+                .concatWith(Mono.defer(() -> {
+                    if (!upstreamDone.get()) {
+                        return Mono.<AgentEvent>error(new OpenAiClientException(
+                                "LLM_STREAM_BROKEN", "OpenAI 流式响应意外中断", true));
+                    }
+                    if (!emittedText.get()) {
+                        return Mono.error(new OpenAiClientException(
+                                "LLM_RESPONSE_INVALID", "模型没有返回最终文本", false));
+                    }
+                    return Mono.just(completed(
+                            startedAt,
+                            2,
+                            List.of(new AgentEvent.ToolHistory(
+                                    call.name() == null ? "" : call.name(),
+                                    call.arguments() == null ? "" : call.arguments(),
+                                    outcome.modelContent())),
+                            inputTokens.get(),
+                            outputTokens.get()));
+                }));
+        return body;
+    }
+
+    private boolean validEmptyArguments(String arguments) {
+        if (arguments == null || arguments.isBlank()) return false;
+        try {
+            JsonNode node = objectMapper.readTree(arguments);
+            return node != null && node.isObject() && node.isEmpty();
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    private ToolOutcome failure(String code, String presentation) {
+        String content = "{\"ok\":false,\"error\":{\"code\":\""
+                + code + "\",\"message\":\"The selected workspace could not be listed safely.\"}}";
+        return new ToolOutcome(false, content, presentation);
+    }
+
+    private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
+        return completed(startedAt, steps, history, null, null);
+    }
+
+    private AgentEvent.Completed completed(
+            long startedAt,
+            int steps,
+            List<AgentEvent.ToolHistory> history,
+            Integer inputTokens,
+            Integer outputTokens) {
+        long durationMs = Math.max(1L, Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
+        return new AgentEvent.Completed(
+                new AgentEvent.RunMetrics(steps, durationMs, inputTokens, outputTokens), history);
+    }
+
+    private record ToolOutcome(boolean ok, String modelContent, String presentation) {
     }
 }

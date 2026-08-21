@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 public sealed interface AgentEvent permits AgentEvent.Status, AgentEvent.TextDelta,
-        AgentEvent.Completed, AgentEvent.Error {
+        AgentEvent.ToolStarted, AgentEvent.ToolFinished, AgentEvent.Completed, AgentEvent.Error {
 
     @JsonProperty("type")
     String type();
@@ -24,6 +24,23 @@ public sealed interface AgentEvent permits AgentEvent.Status, AgentEvent.TextDel
         }
     }
 
+    record ToolStarted(String id, String label, String detail) implements AgentEvent {
+        @Override
+        public String type() {
+            return "tool_started";
+        }
+    }
+
+    record ToolFinished(String id, String state, String detail) implements AgentEvent {
+        @Override
+        public String type() {
+            return "tool_finished";
+        }
+    }
+
+    record ToolHistory(String name, String arguments, String result) {
+    }
+
     record RunMetrics(
             int steps,
             @JsonProperty("durationMs") long durationMs,
@@ -31,7 +48,7 @@ public sealed interface AgentEvent permits AgentEvent.Status, AgentEvent.TextDel
             @JsonProperty("outputTokens") Integer outputTokens) {
     }
 
-    record Completed(RunMetrics metrics, @JsonProperty("toolHistory") List<Object> toolHistory)
+    record Completed(RunMetrics metrics, @JsonProperty("toolHistory") List<ToolHistory> toolHistory)
             implements AgentEvent {
         @Override
         public String type() {
