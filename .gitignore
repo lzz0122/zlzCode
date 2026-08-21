@@ -1,0 +1,51 @@
+# IDE and editor metadata
+.idea/
+.vscode/
+*.iml
+
+# Local Agent rules and design documents
+agent.md
+docs/
+
+# Local environments, configuration, and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Java dependencies and generated output
+backend/target/
+*.class
+build/
+out/
+
+# Web dependencies and generated output
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Tests and coverage are kept on local test branches
+tests/
+src/test/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+test_*.py
+*_test.py
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Logs and caches
+*.log
+*.cache
+.cache/
+tmp/
+temp/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
