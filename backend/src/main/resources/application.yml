@@ -8,4 +8,4 @@ spring:
 
 server:
   address: 127.0.0.1
-  port: 18000
+  port: 8000

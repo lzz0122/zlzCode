@@ -11,6 +11,7 @@ import com.zlzcode.agent.llm.ModelDiscoveryService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -45,10 +46,12 @@ public class OpenAiController {
 
     @PostMapping(path = "/api/agent/runs", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public ResponseEntity<Flux<String>> run(@Valid @RequestBody AgentRunRequest request) {
+    public ResponseEntity<Flux<ServerSentEvent<String>>> run(
+            @Valid @RequestBody AgentRunRequest request) {
         request.openai().normalizedBaseUri();
         request.openai().normalizedApiKey();
-        Flux<String> stream = agentRunService.run(request).map(this::encodeEvent);
+        Flux<ServerSentEvent<String>> stream = agentRunService.run(request)
+                .map(this::encodeEvent);
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .header(HttpHeaders.CACHE_CONTROL, "no-cache")
@@ -56,9 +59,10 @@ public class OpenAiController {
                 .body(stream);
     }
 
-    private String encodeEvent(AgentEvent event) {
+    private ServerSentEvent<String> encodeEvent(AgentEvent event) {
         try {
-            return "data: " + objectMapper.writeValueAsString(event) + "\n\n";
+            return ServerSentEvent.builder(objectMapper.writeValueAsString(event))
+                    .build();
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法编码 Agent 事件", exception);
         }
