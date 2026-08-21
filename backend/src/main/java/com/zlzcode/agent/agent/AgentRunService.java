@@ -10,6 +10,9 @@ import com.zlzcode.agent.llm.OpenAiChatClient;
 import com.zlzcode.agent.llm.OpenAiClientException;
 import com.zlzcode.agent.llm.ToolDecision;
 import com.zlzcode.agent.workspace.WorkspaceOverviewService;
+import com.zlzcode.agent.workspace.AuthorizedWorkspace;
+import com.zlzcode.agent.workspace.WorkspaceRegistry;
+import com.zlzcode.agent.workspace.WorkspaceRegistryException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -29,15 +32,18 @@ public class AgentRunService {
 
     private final OpenAiChatClient chatClient;
     private final WorkspaceOverviewService workspaceOverviewService;
+    private final WorkspaceRegistry workspaceRegistry;
     private final ObjectMapper objectMapper;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
             WorkspaceOverviewService workspaceOverviewService,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            WorkspaceRegistry workspaceRegistry) {
         this.chatClient = chatClient;
         this.workspaceOverviewService = workspaceOverviewService;
         this.objectMapper = objectMapper;
+        this.workspaceRegistry = workspaceRegistry;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
@@ -46,10 +52,16 @@ public class AgentRunService {
             return Flux.concat(
                             Flux.just(new AgentEvent.Status("正在发送"),
                                     new AgentEvent.Status("正在分析")),
-                            chatClient.decide(request)
-                                    .flatMapMany(decision -> executeDecision(request, decision, startedAt)))
+                            Mono.fromCallable(() -> workspaceRegistry.resolve(
+                                            request.workspace().id(), request.workspace().path()))
+                                    .flatMapMany(workspace -> chatClient.decide(request)
+                                            .flatMapMany(decision -> executeDecision(
+                                                    request, workspace, decision, startedAt)))
+                    )
                     .onErrorResume(OpenAiClientException.class, error -> Flux.just(
                             new AgentEvent.Error(error.safeMessage(), error.code(), error.retryable())))
+                    .onErrorResume(WorkspaceRegistryException.class, error -> Flux.just(
+                            new AgentEvent.Error(error.getMessage(), error.code(), error.retryable())))
                     .onErrorResume(RequestContractException.class, error -> Flux.just(
                             new AgentEvent.Error(error.getMessage(), "INVALID_REQUEST", false)))
                     .onErrorResume(error -> Flux.just(
@@ -59,6 +71,7 @@ public class AgentRunService {
 
     private Flux<AgentEvent> executeDecision(
             AgentRunRequest request,
+            AuthorizedWorkspace workspace,
             ToolDecision decision,
             long startedAt) {
         if (!decision.hasToolCall()) {
@@ -80,7 +93,7 @@ public class AgentRunService {
 
         return Flux.concat(
                 Flux.just(new AgentEvent.ToolStarted(call.id(), TOOL_LABEL, null)),
-                executeTool(request, call)
+                executeTool(workspace, call)
                         .flatMapMany(outcome -> Flux.concat(
                                 Flux.just(new AgentEvent.ToolFinished(
                                         call.id(), outcome.ok() ? "completed" : "failed",
@@ -90,7 +103,7 @@ public class AgentRunService {
     }
 
     private Mono<ToolOutcome> executeTool(
-            AgentRunRequest request,
+            AuthorizedWorkspace workspace,
             ToolDecision.ToolCall call) {
         if (!TOOL_NAME.equals(call.name())) {
             return Mono.just(failure("TOOL_NOT_AVAILABLE", "未执行未知工具"));
@@ -99,7 +112,7 @@ public class AgentRunService {
             return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
         }
 
-        return Mono.fromCallable(() -> workspaceOverviewService.list(request.workspace().path()))
+        return Mono.fromCallable(() -> workspaceOverviewService.list(workspace.root()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(TOOL_TIMEOUT)
                 .map(result -> new ToolOutcome(result.ok(), result.modelContent(), result.presentation()))
