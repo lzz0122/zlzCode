@@ -14,13 +14,22 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
 @Service
 public class OpenAiChatClient {
+
+    private static final String SYSTEM_PROMPT = """
+            You are a code workspace assistant.
+            You have access to exactly one workspace tool named list_workspace_entries.
+            When the user asks about the selected project's structure or files, use that
+            tool before making factual claims. It can list only the immediate entries at
+            the workspace root. Never call another tool, invent file names, or emit raw
+            tool-call protocol text.
+            """.trim();
 
     private static final ParameterizedTypeReference<ServerSentEvent<String>> SSE_TYPE =
             new ParameterizedTypeReference<>() {
@@ -34,17 +43,53 @@ public class OpenAiChatClient {
         this.objectMapper = objectMapper;
     }
 
+    public Mono<ToolDecision> decide(AgentRunRequest request) {
+        return requestJson(request, firstRequestBody(request))
+                .map(this::parseDecision)
+                .onErrorMap(this::mapError);
+    }
+
     public Flux<ChatStreamSignal> stream(AgentRunRequest request) {
+        Map<String, Object> body = baseRequestBody(request);
+        body.put("messages", List.of(userMessage(request.prompt())));
+        body.put("stream", true);
+        return streamBody(request, body);
+    }
+
+    public Flux<ChatStreamSignal> streamFinal(
+            AgentRunRequest request,
+            ToolDecision decision,
+            String toolResult) {
+        Map<String, Object> body = baseRequestBody(request);
+        body.put("messages", finalMessages(request, decision, toolResult));
+        body.put("stream", true);
+        return streamBody(request, body);
+    }
+
+    private Mono<JsonNode> requestJson(AgentRunRequest request, Map<String, Object> body) {
         String apiKey = request.openai().normalizedApiKey();
         String completionsUrl = request.openai().normalizedBaseUri() + "/chat/completions";
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", request.model().trim());
-        body.put("messages", List.of(Map.of("role", "user", "content", request.prompt())));
-        body.put("stream", true);
-        if (request.reasoningEffort() != null && !request.reasoningEffort().trim().isEmpty()) {
-            body.put("reasoning_effort", request.reasoningEffort().trim());
-        }
+        return webClient.post()
+                .uri(completionsUrl)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + apiKey)
+                .bodyValue(body)
+                .exchangeToMono(response -> {
+                    if (!response.statusCode().is2xxSuccessful()) {
+                        return response.releaseBody()
+                                .then(Mono.error(statusError(response.statusCode().value())));
+                    }
+                    return response.bodyToMono(JsonNode.class);
+                })
+                .timeout(Duration.ofSeconds(120));
+    }
 
+    private Flux<ChatStreamSignal> streamBody(
+            AgentRunRequest request,
+            Map<String, Object> body) {
+        String apiKey = request.openai().normalizedApiKey();
+        String completionsUrl = request.openai().normalizedBaseUri() + "/chat/completions";
         return webClient.post()
                 .uri(completionsUrl)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -53,55 +98,112 @@ public class OpenAiChatClient {
                 .bodyValue(body)
                 .exchangeToFlux(response -> {
                     if (!response.statusCode().is2xxSuccessful()) {
-                        return response.releaseBody().thenMany(Flux.error(statusError(response.statusCode().value())));
+                        return response.releaseBody()
+                                .thenMany(Flux.error(statusError(response.statusCode().value())));
                     }
-                    return response.bodyToFlux(SSE_TYPE)
-                            .concatMap(this::parseEvent);
+                    return response.bodyToFlux(SSE_TYPE).concatMap(this::parseEvent);
                 })
                 .timeout(Duration.ofSeconds(120))
                 .takeUntil(signal -> signal instanceof ChatStreamSignal.Done)
-                .onErrorMap(error -> {
-                    if (error instanceof OpenAiClientException) {
-                        return error;
-                    }
-                    if (error instanceof TimeoutException) {
-                        return new OpenAiClientException("LLM_TIMEOUT", "OpenAI 请求超时", true);
-                    }
-                    if (error instanceof WebClientRequestException) {
-                        return new OpenAiClientException("LLM_CONNECTION_FAILED", "无法连接 OpenAI Base URL", true);
-                    }
-                    return new OpenAiClientException(
-                            "LLM_RESPONSE_INVALID", "模型返回了无效的流式响应", false);
-                });
+                .onErrorMap(this::mapError);
     }
 
-    private RuntimeException statusError(int status) {
-        if (status == 401 || status == 403) {
-            return new OpenAiClientException("LLM_AUTH_FAILED", "OpenAI API Key 无效或没有访问权限", false);
+    private ToolDecision parseDecision(JsonNode payload) {
+        if (payload == null || !payload.isObject()) invalidResponse();
+        JsonNode choices = payload.get("choices");
+        if (choices == null || !choices.isArray() || choices.size() != 1) invalidResponse();
+        JsonNode message = choices.get(0).get("message");
+        if (message == null || !message.isObject()) invalidResponse();
+
+        String content = textOrNull(message.get("content"));
+        String reasoningContent = textOrNull(message.get("reasoning_content"));
+        JsonNode calls = message.get("tool_calls");
+        if (calls == null || calls.isNull() || calls.size() == 0) {
+            return new ToolDecision(content, reasoningContent, null);
         }
-        if (status == 404) {
-            return new OpenAiClientException("LLM_MODEL_NOT_FOUND", "模型不存在或当前 Key 无权访问", false);
+        if (!calls.isArray() || calls.size() != 1) invalidResponse();
+        JsonNode call = calls.get(0);
+        JsonNode function = call.get("function");
+        if (function == null || !function.isObject()) invalidResponse();
+        return new ToolDecision(
+                content,
+                reasoningContent,
+                new ToolDecision.ToolCall(
+                        textOrNull(call.get("id")),
+                        textOrNull(call.get("type")),
+                        textOrNull(function.get("name")),
+                        textOrNull(function.get("arguments"))));
+    }
+
+    private Map<String, Object> firstRequestBody(AgentRunRequest request) {
+        Map<String, Object> body = baseRequestBody(request);
+        body.put("messages", List.of(systemMessage(), userMessage(request.prompt())));
+        body.put("tools", List.of(workspaceToolSchema()));
+        body.put("tool_choice", "auto");
+        body.put("stream", false);
+        return body;
+    }
+
+    private Map<String, Object> baseRequestBody(AgentRunRequest request) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", request.model().trim());
+        if (request.reasoningEffort() != null && !request.reasoningEffort().trim().isEmpty()) {
+            body.put("reasoning_effort", request.reasoningEffort().trim());
         }
-        if (status == 429) {
-            return new OpenAiClientException("LLM_RATE_LIMITED", "OpenAI 请求过于频繁或额度不足", true);
+        return body;
+    }
+
+    private Map<String, Object> systemMessage() {
+        return Map.of("role", "system", "content", SYSTEM_PROMPT);
+    }
+
+    private Map<String, Object> userMessage(String content) {
+        return Map.of("role", "user", "content", content);
+    }
+
+    private Map<String, Object> workspaceToolSchema() {
+        Map<String, Object> function = new LinkedHashMap<>();
+        function.put("name", "list_workspace_entries");
+        function.put("description", "List the immediate files and directories at the root of the currently selected code workspace. Use this before making claims about the project's top-level structure.");
+        function.put("parameters", Map.of(
+                "type", "object",
+                "properties", Map.of(),
+                "required", List.of(),
+                "additionalProperties", false));
+        return Map.of("type", "function", "function", function);
+    }
+
+    private List<Map<String, Object>> finalMessages(
+            AgentRunRequest request,
+            ToolDecision decision,
+            String toolResult) {
+        ToolDecision.ToolCall call = decision.toolCall();
+        Map<String, Object> function = Map.of(
+                "name", call.name() == null ? "" : call.name(),
+                "arguments", call.arguments() == null ? "" : call.arguments());
+        Map<String, Object> serializedCall = Map.of(
+                "id", call.id() == null ? "" : call.id(),
+                "type", "function",
+                "function", function);
+        Map<String, Object> assistant = new LinkedHashMap<>();
+        assistant.put("role", "assistant");
+        assistant.put("content", decision.content());
+        assistant.put("tool_calls", List.of(serializedCall));
+        if (decision.reasoningContent() != null && !decision.reasoningContent().isBlank()) {
+            assistant.put("reasoning_content", decision.reasoningContent());
         }
-        if (status == 400) {
-            return new OpenAiClientException("LLM_REQUEST_INVALID", "模型服务拒绝了无效请求", false);
-        }
-        if (status >= 500) {
-            return new OpenAiClientException("LLM_UPSTREAM_ERROR", "模型服务暂时不可用", true);
-        }
-        return new OpenAiClientException("LLM_RESPONSE_INVALID", "模型服务拒绝了当前请求", false);
+        return List.of(
+                systemMessage(),
+                userMessage(request.prompt()),
+                assistant,
+                Map.of("role", "tool", "tool_call_id", call.id() == null ? "" : call.id(),
+                        "content", toolResult));
     }
 
     private Flux<ChatStreamSignal> parseEvent(ServerSentEvent<String> event) {
         String data = event.data();
-        if (data == null || data.isBlank()) {
-            return Flux.empty();
-        }
-        if ("[DONE]".equals(data.trim())) {
-            return Flux.just(new ChatStreamSignal.Done());
-        }
+        if (data == null || data.isBlank()) return Flux.empty();
+        if ("[DONE]".equals(data.trim())) return Flux.just(new ChatStreamSignal.Done());
 
         final JsonNode payload;
         try {
@@ -118,17 +220,19 @@ public class OpenAiChatClient {
         List<ChatStreamSignal> signals = new ArrayList<>();
         JsonNode usage = payload.get("usage");
         if (usage != null && !usage.isNull()) {
-            Integer inputTokens = nonNegativeInteger(usage.get("prompt_tokens"));
-            Integer outputTokens = nonNegativeInteger(usage.get("completion_tokens"));
-            signals.add(new ChatStreamSignal.Usage(inputTokens, outputTokens));
+            signals.add(new ChatStreamSignal.Usage(
+                    nonNegativeInteger(usage.get("prompt_tokens")),
+                    nonNegativeInteger(usage.get("completion_tokens"))));
         }
 
         JsonNode choices = payload.get("choices");
-        if (choices == null || !choices.isArray()) {
-            return Flux.error(new OpenAiClientException(
-                    "LLM_RESPONSE_INVALID", "模型返回了无效的流式响应", false));
+        if (choices == null || choices.isNull()) {
+            return signals.isEmpty()
+                    ? Flux.error(new OpenAiClientException(
+                    "LLM_RESPONSE_INVALID", "模型返回了无效的流式响应", false))
+                    : Flux.fromIterable(signals);
         }
-        if (choices.size() > 1) {
+        if (!choices.isArray() || choices.size() > 1) {
             return Flux.error(new OpenAiClientException(
                     "LLM_RESPONSE_INVALID", "模型返回了无效的流式响应", false));
         }
@@ -157,10 +261,46 @@ public class OpenAiChatClient {
         return Flux.fromIterable(signals);
     }
 
-    private Integer nonNegativeInteger(JsonNode node) {
-        if (node == null || node.isNull()) {
-            return null;
+    private RuntimeException mapError(Throwable error) {
+        if (error instanceof OpenAiClientException clientException) return clientException;
+        if (error instanceof TimeoutException) {
+            return new OpenAiClientException("LLM_TIMEOUT", "OpenAI 请求超时", true);
         }
+        if (error instanceof WebClientRequestException) {
+            return new OpenAiClientException("LLM_CONNECTION_FAILED", "无法连接 OpenAI Base URL", true);
+        }
+        return new OpenAiClientException("LLM_RESPONSE_INVALID", "模型返回了无效的响应", false);
+    }
+
+    private RuntimeException statusError(int status) {
+        if (status == 401 || status == 403) {
+            return new OpenAiClientException("LLM_AUTH_FAILED", "OpenAI API Key 无效或没有访问权限", false);
+        }
+        if (status == 404) {
+            return new OpenAiClientException("LLM_MODEL_NOT_FOUND", "模型不存在或当前 Key 无权访问", false);
+        }
+        if (status == 429) {
+            return new OpenAiClientException("LLM_RATE_LIMITED", "OpenAI 请求过于频繁或额度不足", true);
+        }
+        if (status == 400) {
+            return new OpenAiClientException("LLM_REQUEST_INVALID", "模型服务拒绝了无效请求", false);
+        }
+        if (status >= 500) {
+            return new OpenAiClientException("LLM_UPSTREAM_ERROR", "模型服务暂时不可用", true);
+        }
+        return new OpenAiClientException("LLM_RESPONSE_INVALID", "模型服务拒绝了当前请求", false);
+    }
+
+    private String textOrNull(JsonNode node) {
+        return node != null && node.isTextual() ? node.asText() : null;
+    }
+
+    private void invalidResponse() {
+        throw new OpenAiClientException("LLM_RESPONSE_INVALID", "模型返回了无效的工具响应", false);
+    }
+
+    private Integer nonNegativeInteger(JsonNode node) {
+        if (node == null || node.isNull()) return null;
         if (!node.isIntegralNumber() || node.asLong() < 0 || node.asLong() > Integer.MAX_VALUE) {
             throw new OpenAiClientException("LLM_RESPONSE_INVALID", "模型返回了无效的用量信息", false);
         }
