@@ -58,9 +58,7 @@ public class WorkspaceOverviewService {
             while (true) {
                 String content = objectMapper.writeValueAsString(new Overview(true, entries, truncated));
                 if (content.length() <= MAX_RESULT_CHARS || entries.isEmpty()) {
-                    String detail = truncated
-                            ? "发现 " + entries.size() + " 个条目（结果已截断）"
-                            : "发现 " + entries.size() + " 个条目";
+                    String detail = presentation(entries, truncated);
                     return new Result(true, content, detail);
                 }
                 entries.remove(entries.size() - 1);
@@ -91,6 +89,18 @@ public class WorkspaceOverviewService {
             case "file" -> 1;
             default -> 2;
         };
+    }
+
+    private String presentation(List<Entry> entries, boolean truncated) {
+        long directories = entries.stream().filter(entry -> "directory".equals(entry.kind())).count();
+        long files = entries.stream().filter(entry -> "file".equals(entry.kind())).count();
+        long links = entries.stream().filter(entry -> "link".equals(entry.kind())).count();
+        StringBuilder detail = new StringBuilder("发现 ")
+                .append(directories).append(" 个目录、")
+                .append(files).append(" 个文件");
+        if (links > 0) detail.append("、").append(links).append(" 个链接");
+        if (truncated) detail.append("；结果已截断");
+        return detail.toString();
     }
 
     private Result failure(String code, String presentation) {
