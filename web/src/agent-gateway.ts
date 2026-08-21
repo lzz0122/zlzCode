@@ -54,7 +54,7 @@ async function apiError(response: Response, action: string): Promise<Error> {
   }
 
   if (!detail && response.status >= 500) {
-    detail = 'Python 后端未启动或发生内部错误，请确认 127.0.0.1:8000 服务正常'
+    detail = 'Java 后端未启动或发生内部错误，请确认 127.0.0.1:8000 服务正常'
   }
 
   return new AgentGatewayError(`${action}失败：${detail || `HTTP ${response.status}`}`, {
@@ -74,7 +74,7 @@ async function apiFetch(
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new AgentGatewayError(
-      `${action}失败：无法连接 Python 后端，请确认 127.0.0.1:8000 服务已启动`,
+      `${action}失败：无法连接 Java 后端，请确认 127.0.0.1:8000 服务已启动`,
       { code: 'BACKEND_UNREACHABLE', retryable: true, cause: error },
     )
   }
@@ -113,7 +113,7 @@ export class HttpAgentGateway implements AgentGateway {
 
     const payload = await response.json() as ModelListResponse
     if (!Array.isArray(payload.models)) {
-      throw new AgentGatewayError('获取模型失败：Python 后端返回了无效模型列表', {
+      throw new AgentGatewayError('获取模型失败：Java 后端返回了无效模型列表', {
         code: 'MODEL_LIST_INVALID',
         retryable: false,
       })
