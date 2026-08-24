@@ -4,9 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.zlzcode.agent.contract.OpenAiConnectionInput;
 import com.zlzcode.agent.contract.OpenAiModel;
 import com.zlzcode.agent.contract.OpenAiModelListResponse;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
 
@@ -21,26 +19,15 @@ import java.util.concurrent.TimeoutException;
 @Service
 public class ModelDiscoveryService {
 
-    private final WebClient webClient;
-    public ModelDiscoveryService(WebClient openAiWebClient) {
-        this.webClient = openAiWebClient;
+    private final OpenAiTransportClient transportClient;
+
+    public ModelDiscoveryService(OpenAiTransportClient transportClient) {
+        this.transportClient = transportClient;
     }
 
     public Mono<OpenAiModelListResponse> listModels(OpenAiConnectionInput connection) {
-        String apiKey = connection.normalizedApiKey();
-        String modelsUrl = connection.normalizedBaseUri() + "/models";
-
-        return webClient.get()
-                .uri(modelsUrl)
-                .header("Accept", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .exchangeToMono(response -> {
-                    if (!response.statusCode().is2xxSuccessful()) {
-                        return response.releaseBody().then(Mono.error(statusError(response.statusCode())));
-                    }
-                    return response.bodyToMono(JsonNode.class);
-                })
-                .timeout(Duration.ofSeconds(15))
+        return transportClient.getJson(
+                        connection, "/models", Duration.ofSeconds(15), this::statusError)
                 .map(this::parseModels)
                 .onErrorMap(error -> {
                     if (error instanceof ModelDiscoveryException) {
@@ -56,8 +43,7 @@ public class ModelDiscoveryService {
                 });
     }
 
-    private RuntimeException statusError(HttpStatusCode status) {
-        int value = status.value();
+    private RuntimeException statusError(int value) {
         if (value == 401 || value == 403) {
             return new ModelDiscoveryException(401, "API Key 无效或没有获取模型权限", false);
         }
