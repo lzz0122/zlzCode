@@ -6,7 +6,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -22,27 +21,22 @@ public class WorkspaceOverviewService {
     private static final int MAX_RESULT_CHARS = 20_000;
 
     private final ObjectMapper objectMapper;
+    private final WorkspacePathGuard pathGuard;
 
-    public WorkspaceOverviewService(ObjectMapper objectMapper) {
+    public WorkspaceOverviewService(ObjectMapper objectMapper, WorkspacePathGuard pathGuard) {
         this.objectMapper = objectMapper;
+        this.pathGuard = pathGuard;
     }
 
-    public Result list(String workspacePath) {
+    public Result list(Path workspaceRoot) {
         final Path root;
         try {
-            String value = workspacePath == null ? "" : workspacePath.trim();
-            if (value.isEmpty()) return failure("WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
-            root = Path.of(value).toRealPath(LinkOption.NOFOLLOW_LINKS);
-        } catch (InvalidPathException | IOException | SecurityException exception) {
+            root = pathGuard.canonicalDirectory(workspaceRoot);
+        } catch (IOException | RuntimeException exception) {
             return failure("WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
         }
 
         try {
-            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)
-                    || Files.isSymbolicLink(root)) {
-                return failure("WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
-            }
-
             List<Entry> scannedEntries = new ArrayList<>();
             try (var stream = Files.list(root)) {
                 stream.limit(MAX_ENTRIES + 1L).forEach(path -> scannedEntries.add(entry(path)));
@@ -67,10 +61,6 @@ public class WorkspaceOverviewService {
         } catch (IOException | RuntimeException exception) {
             return failure("WORKSPACE_PERMISSION_DENIED", "无法安全读取所选工作区");
         }
-    }
-
-    public Result list(Path workspaceRoot) {
-        return list(workspaceRoot == null ? "" : workspaceRoot.toString());
     }
 
     private Entry entry(Path path) {
