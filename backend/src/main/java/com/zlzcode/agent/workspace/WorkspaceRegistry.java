@@ -31,20 +31,23 @@ public class WorkspaceRegistry {
     private static final int MAX_WORKSPACES = 256;
 
     private final ObjectMapper objectMapper;
+    private final WorkspacePathGuard pathGuard;
     private final Path stateFile;
     private final Map<String, AuthorizedWorkspace> workspaces = new ConcurrentHashMap<>();
 
     @Autowired
     public WorkspaceRegistry(
             ObjectMapper objectMapper,
+            WorkspacePathGuard pathGuard,
             @Value("${codeagent.workspace.state-file:}") String configuredStateFile) {
-        this(objectMapper, configuredStateFile == null || configuredStateFile.isBlank()
+        this(objectMapper, pathGuard, configuredStateFile == null || configuredStateFile.isBlank()
                 ? defaultStateFile()
                 : Path.of(configuredStateFile.trim()));
     }
 
-    public WorkspaceRegistry(ObjectMapper objectMapper, Path stateFile) {
+    public WorkspaceRegistry(ObjectMapper objectMapper, WorkspacePathGuard pathGuard, Path stateFile) {
         this.objectMapper = objectMapper;
+        this.pathGuard = pathGuard;
         this.stateFile = stateFile;
         loadState();
     }
@@ -152,11 +155,7 @@ public class WorkspaceRegistry {
 
     private Path canonicalDirectory(Path value, String code, String message) {
         try {
-            Path root = value.toRealPath();
-            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-                throw new WorkspaceRegistryException(code, message, false);
-            }
-            return root;
+            return pathGuard.canonicalDirectory(value);
         } catch (WorkspaceRegistryException exception) {
             throw exception;
         } catch (IOException | RuntimeException exception) {
@@ -165,20 +164,11 @@ public class WorkspaceRegistry {
     }
 
     private boolean samePath(Path left, Path right) {
-        return canonicalKey(left).equals(canonicalKey(right));
+        return pathGuard.samePath(left, right);
     }
 
     private String workspaceId(Path root) {
-        return "workspace-" + sha256(canonicalKey(root)).substring(0, 16);
-    }
-
-    private String canonicalKey(Path root) {
-        String value = root.toAbsolutePath().normalize().toString();
-        return isWindows() ? value.toLowerCase(java.util.Locale.ROOT) : value;
-    }
-
-    private boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+        return "workspace-" + sha256(pathGuard.canonicalKey(root)).substring(0, 16);
     }
 
     private String sha256(String value) {

@@ -102,7 +102,7 @@ public class AgentRunService {
                                 streamFinal(request, decision, call, outcome, startedAt))));
     }
 
-    private Mono<ToolOutcome> executeTool(
+    private Mono<WorkspaceOverviewService.Result> executeTool(
             AuthorizedWorkspace workspace,
             ToolDecision.ToolCall call) {
         if (!TOOL_NAME.equals(call.name())) {
@@ -115,7 +115,6 @@ public class AgentRunService {
         return Mono.fromCallable(() -> workspaceOverviewService.list(workspace.root()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(TOOL_TIMEOUT)
-                .map(result -> new ToolOutcome(result.ok(), result.modelContent(), result.presentation()))
                 .onErrorReturn(failure("TOOL_TIMEOUT", "读取工作区超时"));
     }
 
@@ -123,7 +122,7 @@ public class AgentRunService {
             AgentRunRequest request,
             ToolDecision decision,
             ToolDecision.ToolCall call,
-            ToolOutcome outcome,
+            WorkspaceOverviewService.Result outcome,
             long startedAt) {
         AtomicBoolean upstreamDone = new AtomicBoolean(false);
         AtomicBoolean emittedText = new AtomicBoolean(false);
@@ -174,10 +173,10 @@ public class AgentRunService {
         }
     }
 
-    private ToolOutcome failure(String code, String presentation) {
+    private WorkspaceOverviewService.Result failure(String code, String presentation) {
         String content = "{\"ok\":false,\"error\":{\"code\":\""
                 + code + "\",\"message\":\"The selected workspace could not be listed safely.\"}}";
-        return new ToolOutcome(false, content, presentation);
+        return new WorkspaceOverviewService.Result(false, content, presentation);
     }
 
     private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
@@ -195,6 +194,4 @@ public class AgentRunService {
                 new AgentEvent.RunMetrics(steps, durationMs, inputTokens, outputTokens), history);
     }
 
-    private record ToolOutcome(boolean ok, String modelContent, String presentation) {
-    }
 }
