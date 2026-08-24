@@ -3,11 +3,8 @@ package com.zlzcode.agent.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.agent.contract.AgentRunRequest;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,15 +28,11 @@ public class OpenAiChatClient {
             tool-call protocol text.
             """.trim();
 
-    private static final ParameterizedTypeReference<ServerSentEvent<String>> SSE_TYPE =
-            new ParameterizedTypeReference<>() {
-            };
-
-    private final WebClient webClient;
+    private final OpenAiTransportClient transportClient;
     private final ObjectMapper objectMapper;
 
-    public OpenAiChatClient(WebClient openAiWebClient, ObjectMapper objectMapper) {
-        this.webClient = openAiWebClient;
+    public OpenAiChatClient(OpenAiTransportClient transportClient, ObjectMapper objectMapper) {
+        this.transportClient = transportClient;
         this.objectMapper = objectMapper;
     }
 
@@ -67,43 +60,18 @@ public class OpenAiChatClient {
     }
 
     private Mono<JsonNode> requestJson(AgentRunRequest request, Map<String, Object> body) {
-        String apiKey = request.openai().normalizedApiKey();
-        String completionsUrl = request.openai().normalizedBaseUri() + "/chat/completions";
-        return webClient.post()
-                .uri(completionsUrl)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .header("Authorization", "Bearer " + apiKey)
-                .bodyValue(body)
-                .exchangeToMono(response -> {
-                    if (!response.statusCode().is2xxSuccessful()) {
-                        return response.releaseBody()
-                                .then(Mono.error(statusError(response.statusCode().value())));
-                    }
-                    return response.bodyToMono(JsonNode.class);
-                })
-                .timeout(Duration.ofSeconds(120));
+        return transportClient.postJson(
+                request.openai(), "/chat/completions", body,
+                Duration.ofSeconds(120), this::statusError);
     }
 
     private Flux<ChatStreamSignal> streamBody(
             AgentRunRequest request,
             Map<String, Object> body) {
-        String apiKey = request.openai().normalizedApiKey();
-        String completionsUrl = request.openai().normalizedBaseUri() + "/chat/completions";
-        return webClient.post()
-                .uri(completionsUrl)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .header("Authorization", "Bearer " + apiKey)
-                .bodyValue(body)
-                .exchangeToFlux(response -> {
-                    if (!response.statusCode().is2xxSuccessful()) {
-                        return response.releaseBody()
-                                .thenMany(Flux.error(statusError(response.statusCode().value())));
-                    }
-                    return response.bodyToFlux(SSE_TYPE).concatMap(this::parseEvent);
-                })
-                .timeout(Duration.ofSeconds(120))
+        return transportClient.postEventStream(
+                        request.openai(), "/chat/completions", body,
+                        Duration.ofSeconds(120), this::statusError)
+                .concatMap(this::parseEvent)
                 .takeUntil(signal -> signal instanceof ChatStreamSignal.Done)
                 .onErrorMap(this::mapError);
     }
