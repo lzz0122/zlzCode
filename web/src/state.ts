@@ -3,6 +3,7 @@ import {
   DEFAULT_TOOL_CALLS_PER_RUN,
   MAX_TOOL_CALLS_PER_RUN,
   MIN_TOOL_CALLS_PER_RUN,
+  normalizeOpenAIModels,
   settleRunningTools,
   type AgentEvent,
   type Message,
@@ -204,7 +205,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         },
       }
     case 'settings/openai-models': {
-      const models = toOpenAIModels([...state.openai.models, ...action.models])
+      const models = normalizeOpenAIModels([...state.openai.models, ...action.models])
       return {
         ...state,
         openai: withSelectedModel({
@@ -215,7 +216,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       }
     }
     case 'settings/openai-model-add': {
-      const models = toOpenAIModels([...state.openai.models, action.model])
+      const models = normalizeOpenAIModels([...state.openai.models, action.model])
       return {
         ...state,
         openai: withSelectedModel({ ...state.openai, models }, action.model.id),
@@ -263,31 +264,10 @@ const STORAGE_KEY = 'zlz-code-agent-web-v2'
 const LEGACY_STORAGE_KEY = 'zlz-code-agent-web-v1'
 const LEGACY_MOCK_WORKSPACE_ID = 'workspace-zlz-code'
 
-function toOpenAIModels(value: unknown): OpenAIModel[] {
-  if (!Array.isArray(value)) return []
-
-  const models = new Map<string, OpenAIModel>()
-  for (const item of value) {
-    if (typeof item !== 'object' || item === null) continue
-    const candidate = item as { id?: unknown; ownedBy?: unknown }
-    if (typeof candidate.id !== 'string') continue
-    const id = candidate.id.trim()
-    if (!id || id.length > 256) continue
-    const ownedBy = typeof candidate.ownedBy === 'string' && candidate.ownedBy.trim()
-      ? candidate.ownedBy.trim().slice(0, 128)
-      : undefined
-    const existing = models.get(id)
-    if (existing?.ownedBy !== undefined && ownedBy === undefined) continue
-    models.set(id, ownedBy === undefined ? { id } : { id, ownedBy })
-  }
-
-  return [...models.values()].sort((left, right) => left.id.localeCompare(right.id))
-}
-
 function toOpenAIPublicSettings(value: unknown): OpenAIPublicSettings {
   if (typeof value !== 'object' || value === null) return initialState.openai
   const candidate = value as Partial<Record<keyof OpenAIPublicSettings, unknown>>
-  const models = toOpenAIModels(candidate.models)
+  const models = normalizeOpenAIModels(candidate.models)
   const requestedModel = typeof candidate.model === 'string' ? candidate.model : ''
   const reasoningEffort = typeof candidate.reasoningEffort === 'string'
     ? candidate.reasoningEffort

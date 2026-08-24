@@ -13,6 +13,27 @@ export interface OpenAIModel {
   ownedBy?: string
 }
 
+export function normalizeOpenAIModels(value: unknown): OpenAIModel[] {
+  if (!Array.isArray(value)) return []
+
+  const models = new Map<string, OpenAIModel>()
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const candidate = item as { id?: unknown; ownedBy?: unknown }
+    if (typeof candidate.id !== 'string') continue
+    const id = candidate.id.trim()
+    if (!id || id.length > 256) continue
+    const ownedBy = typeof candidate.ownedBy === 'string' && candidate.ownedBy.trim()
+      ? candidate.ownedBy.trim().slice(0, 128)
+      : undefined
+    const existing = models.get(id)
+    if (existing?.ownedBy !== undefined && ownedBy === undefined) continue
+    models.set(id, ownedBy === undefined ? { id } : { id, ownedBy })
+  }
+
+  return [...models.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
 export interface OpenAIPublicSettings {
   baseUrl: string
   models: OpenAIModel[]

@@ -1,9 +1,10 @@
-import type {
-  AgentEvent,
-  OpenAIConnectionInput,
-  OpenAIModel,
-  RunRequest,
-  Workspace,
+import {
+  normalizeOpenAIModels,
+  type AgentEvent,
+  type OpenAIConnectionInput,
+  type OpenAIModel,
+  type RunRequest,
+  type Workspace,
 } from './domain'
 import { AgentGatewayError, parseAgentEventStream } from './sse'
 
@@ -119,16 +120,7 @@ export class HttpAgentGateway implements AgentGateway {
       })
     }
 
-    return payload.models.flatMap(item => {
-      if (typeof item !== 'object' || item === null) return []
-      const candidate = item as { id?: unknown; ownedBy?: unknown }
-      if (typeof candidate.id !== 'string' || !candidate.id.trim()) return []
-      const id = candidate.id.trim()
-      const ownedBy = typeof candidate.ownedBy === 'string' && candidate.ownedBy.trim()
-        ? candidate.ownedBy.trim()
-        : undefined
-      return [ownedBy === undefined ? { id } : { id, ownedBy }]
-    })
+    return normalizeOpenAIModels(payload.models)
   }
 
   async pickWorkspace(): Promise<Workspace | null> {
