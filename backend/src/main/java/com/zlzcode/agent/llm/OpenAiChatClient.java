@@ -103,6 +103,11 @@ public class OpenAiChatClient {
                         textOrNull(function.get("arguments"))));
     }
 
+    /*
+     * 背景：当前阶段只支持一次完整工具决策，流式工具调用会把名称和参数拆成多个增量片段。
+     * 设计意图：首轮使用非流式响应一次性取得工具调用，而不是在尚无组装器时拼接不完整片段。
+     * 关键约束：实现并验证工具调用分片组装之前，不得把首轮请求改成 stream=true。
+     */
     private Map<String, Object> firstRequestBody(AgentRunRequest request) {
         Map<String, Object> body = baseRequestBody(request);
         body.put("messages", List.of(systemMessage(), userMessage(request.prompt())));
@@ -141,6 +146,11 @@ public class OpenAiChatClient {
         return Map.of("type", "function", "function", function);
     }
 
+    /*
+     * 背景：模型在第二轮生成答案时需要看到自己发出的工具调用，以及与该调用对应的工具结果。
+     * 设计意图：原样回放 assistant 工具调用和结果消息，而不是重新构造一个新的调用身份。
+     * 关键约束：tool_call_id 必须与首轮返回值完全一致，否则 OpenAI-compatible 服务会拒绝上下文关联。
+     */
     private List<Map<String, Object>> finalMessages(
             AgentRunRequest request,
             ToolDecision decision,
@@ -168,6 +178,11 @@ public class OpenAiChatClient {
                         "content", toolResult));
     }
 
+    /*
+     * 背景：最终 SSE 可能分别携带正文、usage 和 [DONE]，也可能返回不符合约定的工具调用增量。
+     * 设计意图：按事件类型严格解析并把协议数据转换为内部信号，而不是宽松忽略未知结构。
+     * 关键约束：当前第二轮只能输出最终文本；再次出现 tool_calls 或 function_call 必须视为协议错误。
+     */
     private Flux<ChatStreamSignal> parseEvent(ServerSentEvent<String> event) {
         String data = event.data();
         if (data == null || data.isBlank()) return Flux.empty();

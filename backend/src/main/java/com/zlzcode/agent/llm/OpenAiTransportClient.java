@@ -13,6 +13,11 @@ import reactor.core.publisher.Mono;
 import java.time.Duration;
 import java.util.function.IntFunction;
 
+/**
+ * 背景：WebClient 的非成功响应若不消费或释放响应体，连接可能无法安全返回连接池。
+ * 设计意图：所有传输方法先释放错误响应体，再交由上层根据状态码生成脱敏异常，而不是透传上游正文。
+ * 关键约束：新增请求方法也必须遵守先 releaseBody 后报错的顺序，且不得在错误中暴露上游响应内容。
+ */
 @Service
 public class OpenAiTransportClient {
 
