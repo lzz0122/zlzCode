@@ -47,6 +47,11 @@ public class AgentRunService {
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
+        /*
+         * 背景：Agent 通过 SSE 向前端持续发送事件，内部异常若直接逃逸会中断 HTTP 响应并暴露实现细节。
+         * 设计意图：在服务边界把已知异常映射为稳定的公开错误事件，而不是把堆栈交给 Web 层处理。
+         * 关键约束：错误事件必须终止本次运行，且消息中不得包含密钥、本机路径或内部异常堆栈。
+         */
         return Flux.defer(() -> {
             long startedAt = System.nanoTime();
             return Flux.concat(
@@ -91,6 +96,11 @@ public class AgentRunService {
                     "LLM_RESPONSE_INVALID", "模型返回了无效的工具调用", false));
         }
 
+        /*
+         * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
+         * 设计意图：显式串联“开始、结束、整理状态、最终文本”，而不是并行合并这些异步事件。
+         * 关键约束：该顺序不能调整；ToolFinished 必须先于最终文本，否则前端会留下状态错乱的工具卡。
+         */
         return Flux.concat(
                 Flux.just(new AgentEvent.ToolStarted(call.id(), TOOL_LABEL, null)),
                 executeTool(workspace, call)
@@ -112,6 +122,11 @@ public class AgentRunService {
             return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
         }
 
+        /*
+         * 背景：工作区扫描使用阻塞式文件系统 API，直接执行会占用 WebFlux 的 Netty 事件线程。
+         * 设计意图：把扫描调度到 boundedElastic，并用短超时限制不可控的磁盘或网络目录访问。
+         * 关键约束：不得移回事件循环线程，也不得移除超时边界，否则单次慢扫描可能阻塞其他请求。
+         */
         return Mono.fromCallable(() -> workspaceOverviewService.list(workspace.root()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(TOOL_TIMEOUT)
@@ -124,6 +139,11 @@ public class AgentRunService {
             ToolDecision.ToolCall call,
             WorkspaceOverviewService.Result outcome,
             long startedAt) {
+        /*
+         * 背景：上游可能在未发送 [DONE]、未产生正文或只发送 usage 时提前结束流。
+         * 设计意图：分别记录协议完成、正文和统计信息，再在流结束时统一判定能否发送 completed。
+         * 关键约束：缺少 [DONE] 时必须报告 LLM_STREAM_BROKEN，缺少正文时也不得伪造成功完成事件。
+         */
         AtomicBoolean upstreamDone = new AtomicBoolean(false);
         AtomicBoolean emittedText = new AtomicBoolean(false);
         AtomicReference<Integer> inputTokens = new AtomicReference<>();
