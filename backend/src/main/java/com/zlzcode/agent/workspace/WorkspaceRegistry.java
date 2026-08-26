@@ -83,6 +83,11 @@ public class WorkspaceRegistry {
         return workspace;
     }
 
+    /*
+     * 背景：本地授权状态可能因中断、手工修改或目录迁移而损坏，不能把文件内容直接视为可信授权。
+     * 设计意图：先校验文件边界和版本，再逐条重新规范化路径；无效条目单独丢弃，整体异常则失败关闭。
+     * 关键约束：任何解析或路径校验失败都不能新增授权，也不能根据不可信内容猜测或修复授权路径。
+     */
     private void loadState() {
         try {
             if (!Files.isRegularFile(stateFile, LinkOption.NOFOLLOW_LINKS)
@@ -106,14 +111,17 @@ public class WorkspaceRegistry {
                         workspaces.put(id, new AuthorizedWorkspace(id, name, canonical));
                     }
                 } catch (RuntimeException ignored) {
-                    // Missing or invalid saved entries are discarded individually.
                 }
             }
         } catch (IOException | RuntimeException ignored) {
-            // Corrupt local state must never authorize a path.
         }
     }
 
+    /*
+     * 背景：直接覆盖授权文件时若进程中断，可能留下半写入状态并导致后续授权全部失效。
+     * 设计意图：先在目标目录完整写入临时文件，再替换正式文件，而不是边序列化边覆盖目标。
+     * 关键约束：序列化完成前不得写入正式文件；无论替换是否成功，临时文件都必须在 finally 中清理。
+     */
     private void persist(Map<String, AuthorizedWorkspace> values) {
         if (values.size() > MAX_WORKSPACES) {
             throw new WorkspaceRegistryException(

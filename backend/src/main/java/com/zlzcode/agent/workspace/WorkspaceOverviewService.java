@@ -28,6 +28,11 @@ public class WorkspaceOverviewService {
         this.pathGuard = pathGuard;
     }
 
+    /*
+     * 背景：工作区规模和内容不受服务控制，递归或无界扫描会拖慢请求并向模型暴露过多目录信息。
+     * 设计意图：只读取根目录，按稳定顺序输出，并同时限制条目数和序列化字符数。
+     * 关键约束：不得改为递归扫描或跟随链接；结果必须维持 200 个条目和 20000 个字符的上限。
+     */
     public Result list(Path workspaceRoot) {
         final Path root;
         try {
