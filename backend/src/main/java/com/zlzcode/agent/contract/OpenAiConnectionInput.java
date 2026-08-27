@@ -2,6 +2,7 @@ package com.zlzcode.agent.contract;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.zlzcode.agent.validation.RequestContractException;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 

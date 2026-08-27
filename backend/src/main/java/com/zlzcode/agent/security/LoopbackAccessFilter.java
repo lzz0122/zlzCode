@@ -1,8 +1,8 @@
-package com.zlzcode.agent.api;
+package com.zlzcode.agent.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.agent.contract.ApiErrorDetail;
-import com.zlzcode.agent.contract.ApiErrorResponse;
+import com.zlzcode.agent.error.ApiErrorDetail;
+import com.zlzcode.agent.error.ApiErrorResponse;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;

@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.error;
 
 public record ApiErrorResponse(ApiErrorDetail detail) {
 }

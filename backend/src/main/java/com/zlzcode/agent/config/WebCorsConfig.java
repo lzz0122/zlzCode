@@ -1,4 +1,4 @@
-package com.zlzcode.agent.api;
+package com.zlzcode.agent.config;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.config.CorsRegistry;

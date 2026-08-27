@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.validation;
 
 public class RequestContractException extends RuntimeException {
 

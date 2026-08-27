@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.agent.contract.AgentEvent;
 import com.zlzcode.agent.contract.AgentRunRequest;
-import com.zlzcode.agent.contract.RequestContractException;
+import com.zlzcode.agent.validation.RequestContractException;
 import com.zlzcode.agent.llm.ChatStreamSignal;
 import com.zlzcode.agent.llm.OpenAiChatClient;
 import com.zlzcode.agent.llm.OpenAiClientException;
