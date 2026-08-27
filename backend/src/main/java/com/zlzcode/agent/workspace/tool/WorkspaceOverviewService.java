@@ -1,0 +1,125 @@
+package com.zlzcode.agent.workspace.tool;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zlzcode.agent.workspace.authorization.WorkspacePathGuard;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class WorkspaceOverviewService {
+
+    private static final int MAX_ENTRIES = 200;
+    private static final int MAX_RESULT_CHARS = 20_000;
+
+    private final ObjectMapper objectMapper;
+    private final WorkspacePathGuard pathGuard;
+
+    public WorkspaceOverviewService(ObjectMapper objectMapper, WorkspacePathGuard pathGuard) {
+        this.objectMapper = objectMapper;
+        this.pathGuard = pathGuard;
+    }
+
+    /*
+     * 背景：工作区规模和内容不受服务控制，递归或无界扫描会拖慢请求并向模型暴露过多目录信息。
+     * 设计意图：只读取根目录，按稳定顺序输出，并同时限制条目数和序列化字符数。
+     * 关键约束：不得改为递归扫描或跟随链接；结果必须维持 200 个条目和 20000 个字符的上限。
+     */
+    public Result list(Path workspaceRoot) {
+        final Path root;
+        try {
+            root = pathGuard.canonicalDirectory(workspaceRoot);
+        } catch (IOException | RuntimeException exception) {
+            return failure("WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
+        }
+
+        try {
+            List<Entry> scannedEntries = new ArrayList<>();
+            try (var stream = Files.list(root)) {
+                stream.limit(MAX_ENTRIES + 1L).forEach(path -> scannedEntries.add(entry(path)));
+            }
+            List<Entry> entries = scannedEntries;
+            boolean truncated = entries.size() > MAX_ENTRIES;
+            if (truncated) entries = new ArrayList<>(entries.subList(0, MAX_ENTRIES));
+            entries.sort(Comparator
+                    .comparingInt((Entry entry) -> kindOrder(entry.kind()))
+                    .thenComparing(Entry::name, String.CASE_INSENSITIVE_ORDER)
+                    .thenComparing(Entry::name));
+
+            while (true) {
+                String content = objectMapper.writeValueAsString(new Overview(true, entries, truncated));
+                if (content.length() <= MAX_RESULT_CHARS || entries.isEmpty()) {
+                    String detail = presentation(entries, truncated);
+                    return new Result(true, content, detail);
+                }
+                entries.remove(entries.size() - 1);
+                truncated = true;
+            }
+        } catch (IOException | RuntimeException exception) {
+            return failure("WORKSPACE_PERMISSION_DENIED", "无法安全读取所选工作区");
+        }
+    }
+
+    private Entry entry(Path path) {
+        String name = path.getFileName() == null ? "" : path.getFileName().toString();
+        if (Files.isSymbolicLink(path)) return new Entry(name, "link");
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (attributes.isDirectory()) return new Entry(name, "directory");
+            if (attributes.isRegularFile()) return new Entry(name, "file");
+            return new Entry(name, "link");
+        } catch (IOException | SecurityException exception) {
+            return new Entry(name, "link");
+        }
+    }
+
+    private int kindOrder(String kind) {
+        return switch (kind) {
+            case "directory" -> 0;
+            case "file" -> 1;
+            default -> 2;
+        };
+    }
+
+    private String presentation(List<Entry> entries, boolean truncated) {
+        long directories = entries.stream().filter(entry -> "directory".equals(entry.kind())).count();
+        long files = entries.stream().filter(entry -> "file".equals(entry.kind())).count();
+        long links = entries.stream().filter(entry -> "link".equals(entry.kind())).count();
+        StringBuilder detail = new StringBuilder("发现 ")
+                .append(directories).append(" 个目录、")
+                .append(files).append(" 个文件");
+        if (links > 0) detail.append("、").append(links).append(" 个链接");
+        if (truncated) detail.append("；结果已截断");
+        return detail.toString();
+    }
+
+    private Result failure(String code, String presentation) {
+        try {
+            String content = objectMapper.writeValueAsString(
+                    Map.of("ok", false, "error", Map.of("code", code,
+                            "message", "The selected workspace could not be listed safely.")));
+            return new Result(false, content, presentation);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法编码工作区工具结果", exception);
+        }
+    }
+
+    public record Result(boolean ok, String modelContent, String presentation) {
+    }
+
+    private record Entry(String name, String kind) {
+    }
+
+    private record Overview(boolean ok, List<Entry> entries, boolean truncated) {
+    }
+}
