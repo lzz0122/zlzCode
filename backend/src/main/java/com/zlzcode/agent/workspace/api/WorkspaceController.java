@@ -1,9 +1,9 @@
-package com.zlzcode.agent.api;
+package com.zlzcode.agent.workspace.api;
 
-import com.zlzcode.agent.contract.WorkspacePickerResponse;
-import com.zlzcode.agent.contract.WorkspaceRef;
-import com.zlzcode.agent.workspace.DirectoryPickerService;
-import com.zlzcode.agent.workspace.WorkspaceRegistry;
+import com.zlzcode.agent.workspace.authorization.WorkspaceRegistry;
+import com.zlzcode.agent.workspace.contract.WorkspacePickerResponse;
+import com.zlzcode.agent.workspace.contract.WorkspaceRef;
+import com.zlzcode.agent.workspace.picker.DirectoryPickerService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;

@@ -1,7 +1,8 @@
-package com.zlzcode.agent.workspace;
+package com.zlzcode.agent.workspace.tool;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zlzcode.agent.workspace.authorization.WorkspacePathGuard;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;

@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.workspace.contract;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

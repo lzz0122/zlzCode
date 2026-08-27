@@ -1,4 +1,4 @@
-package com.zlzcode.agent.workspace;
+package com.zlzcode.agent.workspace.picker;
 
 import org.springframework.stereotype.Service;
 

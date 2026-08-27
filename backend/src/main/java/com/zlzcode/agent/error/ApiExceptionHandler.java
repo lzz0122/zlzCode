@@ -1,8 +1,8 @@
 package com.zlzcode.agent.error;
 
 import com.zlzcode.agent.validation.RequestContractException;
-import com.zlzcode.agent.workspace.DirectoryPickerUnavailableException;
-import com.zlzcode.agent.workspace.WorkspaceRegistryException;
+import com.zlzcode.agent.workspace.authorization.WorkspaceRegistryException;
+import com.zlzcode.agent.workspace.picker.DirectoryPickerUnavailableException;
 import com.zlzcode.agent.llm.ModelDiscoveryService.ModelDiscoveryException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;

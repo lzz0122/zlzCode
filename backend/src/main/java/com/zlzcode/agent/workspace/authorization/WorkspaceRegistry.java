@@ -1,4 +1,4 @@
-package com.zlzcode.agent.workspace;
+package com.zlzcode.agent.workspace.authorization;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

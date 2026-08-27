@@ -1,4 +1,4 @@
-package com.zlzcode.agent.workspace;
+package com.zlzcode.agent.workspace.authorization;
 
 import org.springframework.stereotype.Component;
 

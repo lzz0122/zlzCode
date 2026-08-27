@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.workspace.contract;
 
 public record WorkspacePickerResponse(boolean cancelled, WorkspaceRef workspace) {
 
