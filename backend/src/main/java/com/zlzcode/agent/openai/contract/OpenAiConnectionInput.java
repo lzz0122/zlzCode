@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.openai.contract;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;

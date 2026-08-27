@@ -1,4 +1,4 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.chat;
 
 public record ToolDecision(String content, String reasoningContent, ToolCall toolCall) {
 

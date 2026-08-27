@@ -1,4 +1,4 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.chat;
 
 public sealed interface ChatStreamSignal permits ChatStreamSignal.Text,
         ChatStreamSignal.Usage, ChatStreamSignal.Done {

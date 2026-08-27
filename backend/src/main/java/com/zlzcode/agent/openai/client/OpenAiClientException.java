@@ -1,4 +1,4 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.client;
 
 public class OpenAiClientException extends RuntimeException {
 

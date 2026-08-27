@@ -1,9 +1,10 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.model;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.zlzcode.agent.contract.OpenAiConnectionInput;
-import com.zlzcode.agent.contract.OpenAiModel;
-import com.zlzcode.agent.contract.OpenAiModelListResponse;
+import com.zlzcode.agent.openai.client.OpenAiTransportClient;
+import com.zlzcode.agent.openai.contract.OpenAiConnectionInput;
+import com.zlzcode.agent.openai.contract.OpenAiModel;
+import com.zlzcode.agent.openai.contract.OpenAiModelListResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;

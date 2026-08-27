@@ -3,7 +3,7 @@ package com.zlzcode.agent.error;
 import com.zlzcode.agent.validation.RequestContractException;
 import com.zlzcode.agent.workspace.authorization.WorkspaceRegistryException;
 import com.zlzcode.agent.workspace.picker.DirectoryPickerUnavailableException;
-import com.zlzcode.agent.llm.ModelDiscoveryService.ModelDiscoveryException;
+import com.zlzcode.agent.openai.model.ModelDiscoveryService.ModelDiscoveryException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;

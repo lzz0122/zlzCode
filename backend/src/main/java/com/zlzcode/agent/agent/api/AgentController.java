@@ -1,13 +1,10 @@
-package com.zlzcode.agent.api;
+package com.zlzcode.agent.agent.api;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.agent.agent.AgentRunService;
-import com.zlzcode.agent.contract.AgentEvent;
-import com.zlzcode.agent.contract.AgentRunRequest;
-import com.zlzcode.agent.contract.OpenAiConnectionInput;
-import com.zlzcode.agent.contract.OpenAiModelListResponse;
-import com.zlzcode.agent.llm.ModelDiscoveryService;
+import com.zlzcode.agent.agent.application.AgentRunService;
+import com.zlzcode.agent.agent.contract.AgentEvent;
+import com.zlzcode.agent.agent.contract.AgentRunRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -17,31 +14,16 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 @RestController
-public class OpenAiController {
+public class AgentController {
 
-    private final ModelDiscoveryService modelDiscoveryService;
     private final AgentRunService agentRunService;
     private final ObjectMapper objectMapper;
 
-    public OpenAiController(
-            ModelDiscoveryService modelDiscoveryService,
-            AgentRunService agentRunService,
-            ObjectMapper objectMapper) {
-        this.modelDiscoveryService = modelDiscoveryService;
+    public AgentController(AgentRunService agentRunService, ObjectMapper objectMapper) {
         this.agentRunService = agentRunService;
         this.objectMapper = objectMapper;
-    }
-
-    @PostMapping(path = "/api/openai/models", consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<OpenAiModelListResponse> listModels(
-            @Valid @RequestBody OpenAiConnectionInput connection) {
-        connection.normalizedBaseUri();
-        connection.normalizedApiKey();
-        return modelDiscoveryService.listModels(connection);
     }
 
     @PostMapping(path = "/api/agent/runs", consumes = MediaType.APPLICATION_JSON_VALUE,

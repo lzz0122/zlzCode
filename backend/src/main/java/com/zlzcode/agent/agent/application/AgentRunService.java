@@ -1,14 +1,14 @@
-package com.zlzcode.agent.agent;
+package com.zlzcode.agent.agent.application;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.agent.contract.AgentEvent;
-import com.zlzcode.agent.contract.AgentRunRequest;
+import com.zlzcode.agent.agent.contract.AgentEvent;
+import com.zlzcode.agent.agent.contract.AgentRunRequest;
+import com.zlzcode.agent.openai.chat.ChatStreamSignal;
+import com.zlzcode.agent.openai.chat.OpenAiChatClient;
+import com.zlzcode.agent.openai.chat.ToolDecision;
+import com.zlzcode.agent.openai.client.OpenAiClientException;
 import com.zlzcode.agent.validation.RequestContractException;
-import com.zlzcode.agent.llm.ChatStreamSignal;
-import com.zlzcode.agent.llm.OpenAiChatClient;
-import com.zlzcode.agent.llm.OpenAiClientException;
-import com.zlzcode.agent.llm.ToolDecision;
 import com.zlzcode.agent.workspace.authorization.AuthorizedWorkspace;
 import com.zlzcode.agent.workspace.authorization.WorkspaceRegistry;
 import com.zlzcode.agent.workspace.authorization.WorkspaceRegistryException;

@@ -1,7 +1,7 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.zlzcode.agent.contract.OpenAiConnectionInput;
+import com.zlzcode.agent.openai.contract.OpenAiConnectionInput;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;

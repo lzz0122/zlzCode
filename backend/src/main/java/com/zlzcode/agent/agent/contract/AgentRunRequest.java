@@ -1,6 +1,7 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.agent.contract;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.zlzcode.agent.openai.contract.OpenAiConnectionInput;
 import com.zlzcode.agent.workspace.contract.WorkspaceRef;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;

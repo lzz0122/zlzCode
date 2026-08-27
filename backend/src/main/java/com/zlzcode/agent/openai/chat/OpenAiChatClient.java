@@ -1,8 +1,10 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.chat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.agent.contract.AgentRunRequest;
+import com.zlzcode.agent.agent.contract.AgentRunRequest;
+import com.zlzcode.agent.openai.client.OpenAiClientException;
+import com.zlzcode.agent.openai.client.OpenAiTransportClient;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClientRequestException;

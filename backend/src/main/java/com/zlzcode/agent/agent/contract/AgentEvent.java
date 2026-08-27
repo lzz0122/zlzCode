@@ -1,4 +1,4 @@
-package com.zlzcode.agent.contract;
+package com.zlzcode.agent.agent.contract;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 

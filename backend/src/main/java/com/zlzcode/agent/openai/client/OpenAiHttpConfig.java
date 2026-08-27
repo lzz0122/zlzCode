@@ -1,4 +1,4 @@
-package com.zlzcode.agent.llm;
+package com.zlzcode.agent.openai.client;
 
 import io.netty.channel.ChannelOption;
 import org.springframework.context.annotation.Bean;
