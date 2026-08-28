@@ -2,11 +2,12 @@ package com.zlzcode.codeagent.agent.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
 import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
+import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
-import com.zlzcode.codeagent.openai.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiClientException;
 import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
@@ -26,7 +27,6 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class AgentRunService {
 
-    private static final String TOOL_NAME = "list_workspace_entries";
     private static final String TOOL_LABEL = "查看工作区根目录";
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(2);
 
@@ -82,8 +82,7 @@ public class AgentRunService {
         if (!decision.hasToolCall()) {
             String content = decision.content();
             if (content == null || content.isBlank()) {
-                return Flux.error(new OpenAiClientException(
-                        "LLM_RESPONSE_INVALID", "模型没有返回可显示文本或工具调用", false));
+                return Flux.error(OpenAiClientException.noDisplayableResponse());
             }
             return Flux.just(
                     new AgentEvent.TextDelta(content),
@@ -91,11 +90,6 @@ public class AgentRunService {
         }
 
         ToolDecision.ToolCall call = decision.toolCall();
-        if (call.id() == null || call.id().isBlank() || !"function".equals(call.type())) {
-            return Flux.error(new OpenAiClientException(
-                    "LLM_RESPONSE_INVALID", "模型返回了无效的工具调用", false));
-        }
-
         /*
          * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
          * 设计意图：显式串联“开始、结束、整理状态、最终文本”，而不是并行合并这些异步事件。
@@ -115,10 +109,10 @@ public class AgentRunService {
     private Mono<WorkspaceOverviewService.Result> executeTool(
             AuthorizedWorkspace workspace,
             ToolDecision.ToolCall call) {
-        if (!TOOL_NAME.equals(call.name())) {
+        if (!AgentLlmContract.WORKSPACE_TOOL_NAME.equals(call.name())) {
             return Mono.just(failure("TOOL_NOT_AVAILABLE", "未执行未知工具"));
         }
-        if (!validEmptyArguments(call.arguments())) {
+        if (!AgentLlmContract.acceptsEmptyObjectArguments(call.arguments(), objectMapper)) {
             return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
         }
 
@@ -163,12 +157,10 @@ public class AgentRunService {
                 })
                 .concatWith(Mono.defer(() -> {
                     if (!upstreamDone.get()) {
-                        return Mono.<AgentEvent>error(new OpenAiClientException(
-                                "LLM_STREAM_BROKEN", "OpenAI 流式响应意外中断", true));
+                        return Mono.<AgentEvent>error(OpenAiClientException.streamBroken());
                     }
                     if (!emittedText.get()) {
-                        return Mono.error(new OpenAiClientException(
-                                "LLM_RESPONSE_INVALID", "模型没有返回最终文本", false));
+                        return Mono.error(OpenAiClientException.finalTextMissing());
                     }
                     return Mono.just(completed(
                             startedAt,
@@ -181,16 +173,6 @@ public class AgentRunService {
                             outputTokens.get()));
                 }));
         return body;
-    }
-
-    private boolean validEmptyArguments(String arguments) {
-        if (arguments == null || arguments.isBlank()) return false;
-        try {
-            JsonNode node = objectMapper.readTree(arguments);
-            return node != null && node.isObject() && node.isEmpty();
-        } catch (Exception exception) {
-            return false;
-        }
     }
 
     private WorkspaceOverviewService.Result failure(String code, String presentation) {

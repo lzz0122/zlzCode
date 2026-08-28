@@ -1,4 +1,4 @@
-package com.zlzcode.codeagent.openai.model;
+package com.zlzcode.codeagent.agent.model;
 
 public record ToolDecision(String content, String reasoningContent, ToolCall toolCall) {
 
