@@ -59,7 +59,7 @@ public class AgentRunService {
                                     new AgentEvent.Status("正在分析")),
                             Mono.fromCallable(() -> workspaceRegistry.resolve(
                                             request.workspace().id(), request.workspace().path()))
-                                    .flatMapMany(workspace -> chatClient.decide(request)
+                    .flatMapMany(workspace -> chatClient.requestInitialDecision(request)
                                             .flatMapMany(decision -> executeDecision(
                                                     request, workspace, decision, startedAt)))
                     )
@@ -143,7 +143,7 @@ public class AgentRunService {
         AtomicReference<Integer> inputTokens = new AtomicReference<>();
         AtomicReference<Integer> outputTokens = new AtomicReference<>();
 
-        Flux<AgentEvent> body = chatClient.streamFinal(request, decision, outcome.modelContent())
+        Flux<AgentEvent> body = chatClient.requestFinalAnswer(request, decision, outcome.modelContent())
                 .<AgentEvent>handle((signal, sink) -> {
                     if (signal instanceof ChatStreamSignal.Text text) {
                         emittedText.set(true);

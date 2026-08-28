@@ -11,7 +11,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 
 @Service
@@ -27,36 +26,33 @@ public class OpenAiChatClient {
         this.chatContract = chatContract;
     }
 
-    public Mono<ToolDecision> decide(AgentRunRequest request) {
-        return requestJson(request, chatContract.firstRequest(request))
-                .map(chatContract::parseDecision)
+    public Mono<ToolDecision> requestInitialDecision(AgentRunRequest request) {
+        return transportClient.postJson(
+                        request.openai(), "/chat/completions",
+                        chatContract.buildInitialDecisionRequest(request),
+                        Duration.ofSeconds(120), OpenAiClientException::fromStatus)
+                .map(chatContract::parseInitialDecision)
                 .onErrorMap(OpenAiClientException::fromThrowable);
     }
 
-    public Flux<ChatStreamSignal> stream(AgentRunRequest request) {
-        return streamBody(request, chatContract.streamRequest(request));
+    public Flux<ChatStreamSignal> requestDirectAnswer(AgentRunRequest request) {
+        return streamSignals(request, chatContract.buildDirectAnswerRequest(request));
     }
 
-    public Flux<ChatStreamSignal> streamFinal(
+    public Flux<ChatStreamSignal> requestFinalAnswer(
             AgentRunRequest request,
             ToolDecision decision,
             String toolResult) {
-        return streamBody(request, chatContract.finalRequest(request, decision, toolResult));
+        return streamSignals(request, chatContract.buildFinalAnswerRequest(request, decision, toolResult));
     }
 
-    private Mono<JsonNode> requestJson(AgentRunRequest request, Map<String, Object> body) {
-        return transportClient.postJson(
-                request.openai(), "/chat/completions", body,
-                Duration.ofSeconds(120), OpenAiClientException::fromStatus);
-    }
-
-    private Flux<ChatStreamSignal> streamBody(
+    private Flux<ChatStreamSignal> streamSignals(
             AgentRunRequest request,
             Map<String, Object> body) {
         return transportClient.postEventStream(
                         request.openai(), "/chat/completions", body,
                         Duration.ofSeconds(120), OpenAiClientException::fromStatus)
-                .concatMapIterable(chatContract::parseStreamEvent)
+                .concatMapIterable(chatContract::parseStreamEventSignals)
                 .takeUntil(signal -> signal instanceof ChatStreamSignal.Done)
                 .onErrorMap(OpenAiClientException::fromThrowable);
     }

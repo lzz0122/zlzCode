@@ -30,7 +30,7 @@ public class OpenAiChatContract {
         this.objectMapper = objectMapper;
     }
 
-    public Map<String, Object> firstRequest(AgentRunRequest request) {
+    public Map<String, Object> buildInitialDecisionRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
         body.put("messages", List.of(
                 systemMessage(),
@@ -41,14 +41,14 @@ public class OpenAiChatContract {
         return body;
     }
 
-    public Map<String, Object> streamRequest(AgentRunRequest request) {
+    public Map<String, Object> buildDirectAnswerRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
         body.put("messages", List.of(userMessage(request.prompt())));
         body.put("stream", true);
         return body;
     }
 
-    public Map<String, Object> finalRequest(
+    public Map<String, Object> buildFinalAnswerRequest(
             AgentRunRequest request,
             ToolDecision decision,
             String toolResult) {
@@ -58,7 +58,7 @@ public class OpenAiChatContract {
         return body;
     }
 
-    public ToolDecision parseDecision(JsonNode payload) {
+    public ToolDecision parseInitialDecision(JsonNode payload) {
         JsonNode message = singleMessage(payload);
         String content = textOrNull(message.get("content"));
         String reasoningContent = textOrNull(message.get("reasoning_content"));
@@ -89,7 +89,7 @@ public class OpenAiChatContract {
                 new ToolDecision.ToolCall(id, type, name, arguments));
     }
 
-    public List<ChatStreamSignal> parseStreamEvent(ServerSentEvent<String> event) {
+    public List<ChatStreamSignal> parseStreamEventSignals(ServerSentEvent<String> event) {
         String data = event.data();
         if (data == null || data.isBlank()) return List.of();
         if ("[DONE]".equals(data.trim())) return List.of(new ChatStreamSignal.Done());
