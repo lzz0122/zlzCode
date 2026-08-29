@@ -2,13 +2,12 @@ package com.zlzcode.codeagent.agent.service;
 
 import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
+import com.zlzcode.codeagent.agent.error.AgentRunExceptionMapper;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
-import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
-import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
@@ -27,14 +26,17 @@ public class AgentRunService {
     private final OpenAiChatClient chatClient;
     private final WorkspaceRegistry workspaceRegistry;
     private final ToolRegistry toolRegistry;
+    private final AgentRunExceptionMapper exceptionMapper;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
             WorkspaceRegistry workspaceRegistry,
-            ToolRegistry toolRegistry) {
+            ToolRegistry toolRegistry,
+            AgentRunExceptionMapper exceptionMapper) {
         this.chatClient = chatClient;
         this.workspaceRegistry = workspaceRegistry;
         this.toolRegistry = toolRegistry;
+        this.exceptionMapper = exceptionMapper;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
@@ -54,14 +56,7 @@ public class AgentRunService {
                                             .flatMapMany(decision -> executeDecision(
                                                     request, workspace, decision, startedAt)))
                     )
-                    .onErrorResume(OpenAiIntegrationException.class, error -> Flux.just(
-                            new AgentEvent.Error(error.safeMessage(), error.code(), error.retryable())))
-                    .onErrorResume(WorkspaceRegistryException.class, error -> Flux.just(
-                            new AgentEvent.Error(error.getMessage(), error.code(), error.retryable())))
-                    .onErrorResume(RequestContractException.class, error -> Flux.just(
-                            new AgentEvent.Error(error.getMessage(), "INVALID_REQUEST", false)))
-                    .onErrorResume(error -> Flux.just(
-                            new AgentEvent.Error("Agent 运行发生内部错误", "INTERNAL_ERROR", false)));
+                    .onErrorResume(exceptionMapper::mapException);
         });
     }
 
