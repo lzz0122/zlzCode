@@ -4,7 +4,7 @@ import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.error.AgentRunExceptionMapper;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
-import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
+import com.zlzcode.codeagent.agent.stream.AgentFinalAnswerStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
@@ -17,8 +17,6 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class AgentRunService {
@@ -27,16 +25,19 @@ public class AgentRunService {
     private final WorkspaceRegistry workspaceRegistry;
     private final ToolRegistry toolRegistry;
     private final AgentRunExceptionMapper exceptionMapper;
+    private final AgentFinalAnswerStreamProcessor finalAnswerStreamProcessor;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
             WorkspaceRegistry workspaceRegistry,
             ToolRegistry toolRegistry,
-            AgentRunExceptionMapper exceptionMapper) {
+            AgentRunExceptionMapper exceptionMapper,
+            AgentFinalAnswerStreamProcessor finalAnswerStreamProcessor) {
         this.chatClient = chatClient;
         this.workspaceRegistry = workspaceRegistry;
         this.toolRegistry = toolRegistry;
         this.exceptionMapper = exceptionMapper;
+        this.finalAnswerStreamProcessor = finalAnswerStreamProcessor;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
@@ -114,55 +115,12 @@ public class AgentRunService {
                         call.id(), outcome.ok() ? "completed" : "failed",
                         outcome.presentation())),
                 Flux.just(new AgentEvent.Status("正在整理结果")),
-                streamFinal(request, decision, call, outcome, startedAt));
-    }
-
-    private Flux<AgentEvent> streamFinal(
-            AgentRunRequest request,
-            ToolDecision decision,
-            ToolDecision.ToolCall call,
-            ToolOutcome outcome,
-            long startedAt) {
-        /*
-         * 背景：上游可能在未发送 [DONE]、未产生正文或只发送 usage 时提前结束流。
-         * 设计意图：分别记录协议完成、正文和统计信息，再在流结束时统一判定能否发送 completed。
-         * 关键约束：缺少 [DONE] 时必须报告 LLM_STREAM_BROKEN，缺少正文时也不得伪造成功完成事件。
-         */
-        AtomicBoolean upstreamDone = new AtomicBoolean(false);
-        AtomicBoolean emittedText = new AtomicBoolean(false);
-        AtomicReference<Integer> inputTokens = new AtomicReference<>();
-        AtomicReference<Integer> outputTokens = new AtomicReference<>();
-
-        Flux<AgentEvent> body = chatClient.requestFinalAnswer(request, decision, outcome.modelContent())
-                .<AgentEvent>handle((signal, sink) -> {
-                    if (signal instanceof ChatStreamSignal.Text text) {
-                        emittedText.set(true);
-                        sink.next(new AgentEvent.TextDelta(text.value()));
-                    } else if (signal instanceof ChatStreamSignal.Usage usage) {
-                        inputTokens.set(usage.inputTokens());
-                        outputTokens.set(usage.outputTokens());
-                    } else if (signal instanceof ChatStreamSignal.Done) {
-                        upstreamDone.set(true);
-                    }
-                })
-                .concatWith(Mono.defer(() -> {
-                    if (!upstreamDone.get()) {
-                        return Mono.<AgentEvent>error(OpenAiIntegrationException.streamBroken());
-                    }
-                    if (!emittedText.get()) {
-                        return Mono.error(OpenAiIntegrationException.finalTextMissing());
-                    }
-                    return Mono.just(completed(
-                            startedAt,
-                            2,
-                            List.of(new AgentEvent.ToolHistory(
-                                    call.name() == null ? "" : call.name(),
-                                    call.arguments() == null ? "" : call.arguments(),
-                                    outcome.modelContent())),
-                            inputTokens.get(),
-                            outputTokens.get()));
-                }));
-        return body;
+                finalAnswerStreamProcessor.processFinalAnswer(
+                        chatClient.requestFinalAnswer(
+                                request, decision, outcome.modelContent()),
+                        call,
+                        outcome,
+                        startedAt));
     }
 
     private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
