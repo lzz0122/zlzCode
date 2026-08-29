@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
-import com.zlzcode.codeagent.openai.exception.OpenAiClientException;
+import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Component;
@@ -101,13 +101,13 @@ public class OpenAiChatProtocol {
             return new ToolDecision(content, reasoningContent, null);
         }
         if (!calls.isArray() || calls.size() != 1) {
-            throw OpenAiClientException.invalidToolResponse();
+            throw OpenAiIntegrationException.invalidToolResponse();
         }
 
         JsonNode call = calls.get(0);
         JsonNode function = call == null ? null : call.get(FIELD_FUNCTION);
         if (call == null || !call.isObject() || function == null || !function.isObject()) {
-            throw OpenAiClientException.invalidToolResponse();
+            throw OpenAiIntegrationException.invalidToolResponse();
         }
 
         String id = textOrNull(call.get(FIELD_ID));
@@ -115,7 +115,7 @@ public class OpenAiChatProtocol {
         String name = textOrNull(function.get(FIELD_NAME));
         String arguments = textOrNull(function.get(FIELD_ARGUMENTS));
         if (id == null || id.isBlank() || !FUNCTION_KIND.equals(type) || name == null || name.isBlank()) {
-            throw OpenAiClientException.invalidToolResponse();
+            throw OpenAiIntegrationException.invalidToolResponse();
         }
         return new ToolDecision(
                 content,
@@ -132,10 +132,10 @@ public class OpenAiChatProtocol {
         try {
             payload = objectMapper.readTree(data);
         } catch (Exception exception) {
-            throw OpenAiClientException.invalidStreamResponse();
+            throw OpenAiIntegrationException.invalidStreamResponse();
         }
         if (payload == null || !payload.isObject()) {
-            throw OpenAiClientException.invalidStreamResponse();
+            throw OpenAiIntegrationException.invalidStreamResponse();
         }
 
         List<ChatStreamSignal> signals = new ArrayList<>();
@@ -148,11 +148,11 @@ public class OpenAiChatProtocol {
 
         JsonNode choices = payload.get(FIELD_CHOICES);
         if (choices == null || choices.isNull()) {
-            if (signals.isEmpty()) throw OpenAiClientException.invalidStreamResponse();
+            if (signals.isEmpty()) throw OpenAiIntegrationException.invalidStreamResponse();
             return List.copyOf(signals);
         }
         if (!choices.isArray() || choices.size() > 1) {
-            throw OpenAiClientException.invalidStreamResponse();
+            throw OpenAiIntegrationException.invalidStreamResponse();
         }
         if (choices.size() == 1) {
             JsonNode delta = choices.get(0).get(FIELD_DELTA);
@@ -160,11 +160,11 @@ public class OpenAiChatProtocol {
                 if (!delta.isObject()
                         || (delta.has(FIELD_TOOL_CALLS) && !delta.get(FIELD_TOOL_CALLS).isNull())
                         || (delta.has(FIELD_FUNCTION_CALL) && !delta.get(FIELD_FUNCTION_CALL).isNull())) {
-                    throw OpenAiClientException.unsupportedToolStream();
+                    throw OpenAiIntegrationException.unsupportedToolStream();
                 }
                 JsonNode content = delta.get(FIELD_CONTENT);
                 if (content != null && !content.isNull()) {
-                    if (!content.isTextual()) throw OpenAiClientException.invalidTextDelta();
+                    if (!content.isTextual()) throw OpenAiIntegrationException.invalidTextDelta();
                     if (!content.asText().isEmpty()) signals.add(new ChatStreamSignal.Text(content.asText()));
                 }
             }
@@ -173,13 +173,13 @@ public class OpenAiChatProtocol {
     }
 
     private JsonNode singleMessage(JsonNode payload) {
-        if (payload == null || !payload.isObject()) throw OpenAiClientException.invalidToolResponse();
+        if (payload == null || !payload.isObject()) throw OpenAiIntegrationException.invalidToolResponse();
         JsonNode choices = payload.get(FIELD_CHOICES);
         if (choices == null || !choices.isArray() || choices.size() != 1) {
-            throw OpenAiClientException.invalidToolResponse();
+            throw OpenAiIntegrationException.invalidToolResponse();
         }
         JsonNode message = choices.get(0).get(FIELD_MESSAGE);
-        if (message == null || !message.isObject()) throw OpenAiClientException.invalidToolResponse();
+        if (message == null || !message.isObject()) throw OpenAiIntegrationException.invalidToolResponse();
         return message;
     }
 
@@ -243,7 +243,7 @@ public class OpenAiChatProtocol {
     private Integer nonNegativeInteger(JsonNode node) {
         if (node == null || node.isNull()) return null;
         if (!node.isIntegralNumber() || node.asLong() < 0 || node.asLong() > Integer.MAX_VALUE) {
-            throw OpenAiClientException.invalidUsage();
+            throw OpenAiIntegrationException.invalidUsage();
         }
         return node.intValue();
     }
