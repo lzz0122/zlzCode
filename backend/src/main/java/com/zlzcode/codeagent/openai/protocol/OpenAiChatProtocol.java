@@ -7,6 +7,8 @@ import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
+import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Component;
 
@@ -59,9 +61,18 @@ public class OpenAiChatProtocol {
     private static final String STREAM_DONE_MARKER = "[DONE]";
 
     private final ObjectMapper objectMapper;
+    private final WorkspaceOverviewToolDefinition workspaceTool;
+
+    @Autowired
+    public OpenAiChatProtocol(
+            ObjectMapper objectMapper,
+            WorkspaceOverviewToolDefinition workspaceTool) {
+        this.objectMapper = objectMapper;
+        this.workspaceTool = workspaceTool;
+    }
 
     public OpenAiChatProtocol(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+        this(objectMapper, new WorkspaceOverviewToolDefinition(objectMapper));
     }
 
     public Map<String, Object> encodeInitialDecisionRequest(AgentRunRequest request) {
@@ -193,7 +204,8 @@ public class OpenAiChatProtocol {
     }
 
     private Map<String, Object> systemMessage() {
-        return Map.of(FIELD_ROLE, ROLE_SYSTEM, FIELD_CONTENT, AgentLlmContract.systemPrompt());
+        return Map.of(FIELD_ROLE, ROLE_SYSTEM,
+                FIELD_CONTENT, AgentLlmContract.systemPrompt(workspaceTool.name()));
     }
 
     private Map<String, Object> userMessage(String content) {
@@ -201,13 +213,12 @@ public class OpenAiChatProtocol {
     }
 
     private Map<String, Object> toolDefinition() {
-        AgentLlmContract.WorkspaceTool tool = AgentLlmContract.workspaceTool();
         return Map.of(
                 FIELD_TYPE, FUNCTION_KIND,
                 FIELD_FUNCTION, Map.of(
-                        FIELD_NAME, tool.name(),
-                        FIELD_DESCRIPTION, tool.description(),
-                        FIELD_PARAMETERS, tool.parametersSchema()));
+                        FIELD_NAME, workspaceTool.name(),
+                        FIELD_DESCRIPTION, workspaceTool.description(),
+                        FIELD_PARAMETERS, workspaceTool.parametersSchema()));
     }
 
     private List<Map<String, Object>> finalMessages(

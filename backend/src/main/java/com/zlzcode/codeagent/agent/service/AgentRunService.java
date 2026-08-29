@@ -1,8 +1,5 @@
 package com.zlzcode.codeagent.agent.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
 import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
@@ -14,6 +11,7 @@ import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import com.zlzcode.codeagent.tool.WorkspaceOverviewService;
+import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -27,23 +25,22 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class AgentRunService {
 
-    private static final String TOOL_LABEL = "查看工作区根目录";
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(2);
 
     private final OpenAiChatClient chatClient;
     private final WorkspaceOverviewService workspaceOverviewService;
     private final WorkspaceRegistry workspaceRegistry;
-    private final ObjectMapper objectMapper;
+    private final WorkspaceOverviewToolDefinition workspaceTool;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
             WorkspaceOverviewService workspaceOverviewService,
-            ObjectMapper objectMapper,
-            WorkspaceRegistry workspaceRegistry) {
+            WorkspaceRegistry workspaceRegistry,
+            WorkspaceOverviewToolDefinition workspaceTool) {
         this.chatClient = chatClient;
         this.workspaceOverviewService = workspaceOverviewService;
-        this.objectMapper = objectMapper;
         this.workspaceRegistry = workspaceRegistry;
+        this.workspaceTool = workspaceTool;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
@@ -96,7 +93,7 @@ public class AgentRunService {
          * 关键约束：该顺序不能调整；ToolFinished 必须先于最终文本，否则前端会留下状态错乱的工具卡。
          */
         return Flux.concat(
-                Flux.just(new AgentEvent.ToolStarted(call.id(), TOOL_LABEL, null)),
+                Flux.just(new AgentEvent.ToolStarted(call.id(), workspaceTool.displayName(), null)),
                 executeTool(workspace, call)
                         .flatMapMany(outcome -> Flux.concat(
                                 Flux.just(new AgentEvent.ToolFinished(
@@ -109,10 +106,10 @@ public class AgentRunService {
     private Mono<WorkspaceOverviewService.Result> executeTool(
             AuthorizedWorkspace workspace,
             ToolDecision.ToolCall call) {
-        if (!AgentLlmContract.WORKSPACE_TOOL_NAME.equals(call.name())) {
+        if (!workspaceTool.name().equals(call.name())) {
             return Mono.just(failure("TOOL_NOT_AVAILABLE", "未执行未知工具"));
         }
-        if (!AgentLlmContract.acceptsEmptyObjectArguments(call.arguments(), objectMapper)) {
+        if (!workspaceTool.acceptsArguments(call.arguments())) {
             return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
         }
 
