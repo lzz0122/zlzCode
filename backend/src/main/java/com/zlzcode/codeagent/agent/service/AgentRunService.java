@@ -8,7 +8,7 @@ import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
-import com.zlzcode.codeagent.openai.exception.OpenAiClientException;
+import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
@@ -63,7 +63,7 @@ public class AgentRunService {
                                             .flatMapMany(decision -> executeDecision(
                                                     request, workspace, decision, startedAt)))
                     )
-                    .onErrorResume(OpenAiClientException.class, error -> Flux.just(
+                    .onErrorResume(OpenAiIntegrationException.class, error -> Flux.just(
                             new AgentEvent.Error(error.safeMessage(), error.code(), error.retryable())))
                     .onErrorResume(WorkspaceRegistryException.class, error -> Flux.just(
                             new AgentEvent.Error(error.getMessage(), error.code(), error.retryable())))
@@ -82,7 +82,7 @@ public class AgentRunService {
         if (!decision.hasToolCall()) {
             String content = decision.content();
             if (content == null || content.isBlank()) {
-                return Flux.error(OpenAiClientException.noDisplayableResponse());
+                return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
             }
             return Flux.just(
                     new AgentEvent.TextDelta(content),
@@ -157,10 +157,10 @@ public class AgentRunService {
                 })
                 .concatWith(Mono.defer(() -> {
                     if (!upstreamDone.get()) {
-                        return Mono.<AgentEvent>error(OpenAiClientException.streamBroken());
+                        return Mono.<AgentEvent>error(OpenAiIntegrationException.streamBroken());
                     }
                     if (!emittedText.get()) {
-                        return Mono.error(OpenAiClientException.finalTextMissing());
+                        return Mono.error(OpenAiIntegrationException.finalTextMissing());
                     }
                     return Mono.just(completed(
                             startedAt,

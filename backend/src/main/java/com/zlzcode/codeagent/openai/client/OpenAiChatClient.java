@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.protocol.OpenAiChatProtocol;
-import com.zlzcode.codeagent.openai.exception.OpenAiClientException;
+import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -30,9 +30,9 @@ public class OpenAiChatClient {
         return transportClient.postJson(
                         request.openai(), "/chat/completions",
                         chatProtocol.encodeInitialDecisionRequest(request),
-                        Duration.ofSeconds(120), OpenAiClientException::fromStatus)
+                        Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
                 .map(chatProtocol::decodeInitialDecision)
-                .onErrorMap(OpenAiClientException::fromThrowable);
+                .onErrorMap(OpenAiIntegrationException::fromThrowable);
     }
 
     public Flux<ChatStreamSignal> requestDirectAnswer(AgentRunRequest request) {
@@ -51,9 +51,9 @@ public class OpenAiChatClient {
             Map<String, Object> body) {
         return transportClient.postEventStream(
                         request.openai(), "/chat/completions", body,
-                        Duration.ofSeconds(120), OpenAiClientException::fromStatus)
+                        Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
                 .concatMapIterable(chatProtocol::decodeStreamEventSignals)
                 .takeUntil(signal -> signal instanceof ChatStreamSignal.Done)
-                .onErrorMap(OpenAiClientException::fromThrowable);
+                .onErrorMap(OpenAiIntegrationException::fromThrowable);
     }
 }

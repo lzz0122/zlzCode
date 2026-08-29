@@ -5,7 +5,7 @@ import com.zlzcode.codeagent.error.dto.ApiErrorResponse;
 import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.exception.DirectoryPickerUnavailableException;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
-import com.zlzcode.codeagent.openai.service.ModelDiscoveryService.ModelDiscoveryException;
+import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -48,10 +48,12 @@ public class ApiExceptionHandler {
         return response(status, exception.code(), exception.getMessage(), exception.retryable());
     }
 
-    @ExceptionHandler(ModelDiscoveryException.class)
-    public ResponseEntity<ApiErrorResponse> handleModelDiscovery(ModelDiscoveryException exception) {
-        return response(HttpStatus.valueOf(exception.status()),
-                "MODEL_DISCOVERY_FAILED", exception.safeMessage(), exception.retryable());
+    @ExceptionHandler(OpenAiIntegrationException.class)
+    public ResponseEntity<ApiErrorResponse> handleOpenAiIntegration(OpenAiIntegrationException exception) {
+        HttpStatus status = exception.httpStatus() == null
+                ? HttpStatus.BAD_GATEWAY
+                : HttpStatus.valueOf(exception.httpStatus());
+        return response(status, exception.code(), exception.safeMessage(), exception.retryable());
     }
 
     private ResponseEntity<ApiErrorResponse> response(
