@@ -10,12 +10,10 @@ import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
-import com.zlzcode.codeagent.tool.WorkspaceOverviewService;
-import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
+import com.zlzcode.codeagent.tool.runtime.WorkspaceOverviewTool;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.List;
@@ -25,20 +23,15 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class AgentRunService {
 
-    private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(2);
-
     private final OpenAiChatClient chatClient;
-    private final WorkspaceOverviewService workspaceOverviewService;
     private final WorkspaceRegistry workspaceRegistry;
-    private final WorkspaceOverviewToolDefinition workspaceTool;
+    private final WorkspaceOverviewTool workspaceTool;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
-            WorkspaceOverviewService workspaceOverviewService,
             WorkspaceRegistry workspaceRegistry,
-            WorkspaceOverviewToolDefinition workspaceTool) {
+            WorkspaceOverviewTool workspaceTool) {
         this.chatClient = chatClient;
-        this.workspaceOverviewService = workspaceOverviewService;
         this.workspaceRegistry = workspaceRegistry;
         this.workspaceTool = workspaceTool;
     }
@@ -94,7 +87,7 @@ public class AgentRunService {
          */
         return Flux.concat(
                 Flux.just(new AgentEvent.ToolStarted(call.id(), workspaceTool.displayName(), null)),
-                executeTool(workspace, call)
+                workspaceTool.execute(workspace, call)
                         .flatMapMany(outcome -> Flux.concat(
                                 Flux.just(new AgentEvent.ToolFinished(
                                         call.id(), outcome.ok() ? "completed" : "failed",
@@ -103,32 +96,11 @@ public class AgentRunService {
                                 streamFinal(request, decision, call, outcome, startedAt))));
     }
 
-    private Mono<WorkspaceOverviewService.Result> executeTool(
-            AuthorizedWorkspace workspace,
-            ToolDecision.ToolCall call) {
-        if (!workspaceTool.name().equals(call.name())) {
-            return Mono.just(failure("TOOL_NOT_AVAILABLE", "未执行未知工具"));
-        }
-        if (!workspaceTool.acceptsArguments(call.arguments())) {
-            return Mono.just(failure("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问"));
-        }
-
-        /*
-         * 背景：工作区扫描使用阻塞式文件系统 API，直接执行会占用 WebFlux 的 Netty 事件线程。
-         * 设计意图：把扫描调度到 boundedElastic，并用短超时限制不可控的磁盘或网络目录访问。
-         * 关键约束：不得移回事件循环线程，也不得移除超时边界，否则单次慢扫描可能阻塞其他请求。
-         */
-        return Mono.fromCallable(() -> workspaceOverviewService.list(workspace.root()))
-                .subscribeOn(Schedulers.boundedElastic())
-                .timeout(TOOL_TIMEOUT)
-                .onErrorReturn(failure("TOOL_TIMEOUT", "读取工作区超时"));
-    }
-
     private Flux<AgentEvent> streamFinal(
             AgentRunRequest request,
             ToolDecision decision,
             ToolDecision.ToolCall call,
-            WorkspaceOverviewService.Result outcome,
+            WorkspaceOverviewTool.Result outcome,
             long startedAt) {
         /*
          * 背景：上游可能在未发送 [DONE]、未产生正文或只发送 usage 时提前结束流。
@@ -170,12 +142,6 @@ public class AgentRunService {
                             outputTokens.get()));
                 }));
         return body;
-    }
-
-    private WorkspaceOverviewService.Result failure(String code, String presentation) {
-        String content = "{\"ok\":false,\"error\":{\"code\":\""
-                + code + "\",\"message\":\"The selected workspace could not be listed safely.\"}}";
-        return new WorkspaceOverviewService.Result(false, content, presentation);
     }
 
     private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
