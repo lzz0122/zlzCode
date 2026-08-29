@@ -1,4 +1,4 @@
-package com.zlzcode.codeagent.openai.contract;
+package com.zlzcode.codeagent.openai.protocol;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,21 +16,21 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * OpenAI-compatible Chat Completions 的线协议适配。
+ * OpenAI-compatible Chat Completions 的协议编解码适配。
  *
  * 请求构造和响应解析共同属于同一条外部协议，放在这里可以让客户端只负责调用，
  * 也避免为每个局部 JSON 方法创建无法独立拥有协议的包装类。
  */
 @Component
-public class OpenAiChatContract {
+public class OpenAiChatProtocol {
 
     private final ObjectMapper objectMapper;
 
-    public OpenAiChatContract(ObjectMapper objectMapper) {
+    public OpenAiChatProtocol(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
-    public Map<String, Object> buildInitialDecisionRequest(AgentRunRequest request) {
+    public Map<String, Object> encodeInitialDecisionRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
         body.put("messages", List.of(
                 systemMessage(),
@@ -41,14 +41,14 @@ public class OpenAiChatContract {
         return body;
     }
 
-    public Map<String, Object> buildDirectAnswerRequest(AgentRunRequest request) {
+    public Map<String, Object> encodeDirectAnswerRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
         body.put("messages", List.of(userMessage(request.prompt())));
         body.put("stream", true);
         return body;
     }
 
-    public Map<String, Object> buildFinalAnswerRequest(
+    public Map<String, Object> encodeFinalAnswerRequest(
             AgentRunRequest request,
             ToolDecision decision,
             String toolResult) {
@@ -58,7 +58,7 @@ public class OpenAiChatContract {
         return body;
     }
 
-    public ToolDecision parseInitialDecision(JsonNode payload) {
+    public ToolDecision decodeInitialDecision(JsonNode payload) {
         JsonNode message = singleMessage(payload);
         String content = textOrNull(message.get("content"));
         String reasoningContent = textOrNull(message.get("reasoning_content"));
@@ -89,7 +89,7 @@ public class OpenAiChatContract {
                 new ToolDecision.ToolCall(id, type, name, arguments));
     }
 
-    public List<ChatStreamSignal> parseStreamEventSignals(ServerSentEvent<String> event) {
+    public List<ChatStreamSignal> decodeStreamEventSignals(ServerSentEvent<String> event) {
         String data = event.data();
         if (data == null || data.isBlank()) return List.of();
         if ("[DONE]".equals(data.trim())) return List.of(new ChatStreamSignal.Done());
