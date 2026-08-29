@@ -24,6 +24,40 @@ import java.util.Map;
 @Component
 public class OpenAiChatProtocol {
 
+    private static final String FIELD_MODEL = "model";
+    private static final String FIELD_MESSAGES = "messages";
+    private static final String FIELD_TOOLS = "tools";
+    private static final String FIELD_TOOL_CHOICE = "tool_choice";
+    private static final String FIELD_STREAM = "stream";
+    private static final String FIELD_REASONING_EFFORT = "reasoning_effort";
+    private static final String FIELD_ROLE = "role";
+    private static final String FIELD_CONTENT = "content";
+    private static final String FIELD_REASONING_CONTENT = "reasoning_content";
+    private static final String FIELD_TOOL_CALLS = "tool_calls";
+    private static final String FIELD_FUNCTION_CALL = "function_call";
+    private static final String FIELD_FUNCTION = "function";
+    private static final String FIELD_ID = "id";
+    private static final String FIELD_TYPE = "type";
+    private static final String FIELD_NAME = "name";
+    private static final String FIELD_ARGUMENTS = "arguments";
+    private static final String FIELD_DESCRIPTION = "description";
+    private static final String FIELD_PARAMETERS = "parameters";
+    private static final String FIELD_TOOL_CALL_ID = "tool_call_id";
+    private static final String FIELD_MESSAGE = "message";
+    private static final String FIELD_USAGE = "usage";
+    private static final String FIELD_PROMPT_TOKENS = "prompt_tokens";
+    private static final String FIELD_COMPLETION_TOKENS = "completion_tokens";
+    private static final String FIELD_CHOICES = "choices";
+    private static final String FIELD_DELTA = "delta";
+
+    private static final String ROLE_SYSTEM = "system";
+    private static final String ROLE_USER = "user";
+    private static final String ROLE_ASSISTANT = "assistant";
+    private static final String ROLE_TOOL = "tool";
+    private static final String FUNCTION_KIND = "function";
+    private static final String TOOL_CHOICE_AUTO = "auto";
+    private static final String STREAM_DONE_MARKER = "[DONE]";
+
     private final ObjectMapper objectMapper;
 
     public OpenAiChatProtocol(ObjectMapper objectMapper) {
@@ -32,19 +66,19 @@ public class OpenAiChatProtocol {
 
     public Map<String, Object> encodeInitialDecisionRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
-        body.put("messages", List.of(
+        body.put(FIELD_MESSAGES, List.of(
                 systemMessage(),
                 userMessage(request.prompt())));
-        body.put("tools", List.of(toolDefinition()));
-        body.put("tool_choice", "auto");
-        body.put("stream", false);
+        body.put(FIELD_TOOLS, List.of(toolDefinition()));
+        body.put(FIELD_TOOL_CHOICE, TOOL_CHOICE_AUTO);
+        body.put(FIELD_STREAM, false);
         return body;
     }
 
     public Map<String, Object> encodeDirectAnswerRequest(AgentRunRequest request) {
         Map<String, Object> body = baseRequest(request);
-        body.put("messages", List.of(userMessage(request.prompt())));
-        body.put("stream", true);
+        body.put(FIELD_MESSAGES, List.of(userMessage(request.prompt())));
+        body.put(FIELD_STREAM, true);
         return body;
     }
 
@@ -53,16 +87,16 @@ public class OpenAiChatProtocol {
             ToolDecision decision,
             String toolResult) {
         Map<String, Object> body = baseRequest(request);
-        body.put("messages", finalMessages(request, decision, toolResult));
-        body.put("stream", true);
+        body.put(FIELD_MESSAGES, finalMessages(request, decision, toolResult));
+        body.put(FIELD_STREAM, true);
         return body;
     }
 
     public ToolDecision decodeInitialDecision(JsonNode payload) {
         JsonNode message = singleMessage(payload);
-        String content = textOrNull(message.get("content"));
-        String reasoningContent = textOrNull(message.get("reasoning_content"));
-        JsonNode calls = message.get("tool_calls");
+        String content = textOrNull(message.get(FIELD_CONTENT));
+        String reasoningContent = textOrNull(message.get(FIELD_REASONING_CONTENT));
+        JsonNode calls = message.get(FIELD_TOOL_CALLS);
         if (calls == null || calls.isNull() || (calls.isArray() && calls.isEmpty())) {
             return new ToolDecision(content, reasoningContent, null);
         }
@@ -71,16 +105,16 @@ public class OpenAiChatProtocol {
         }
 
         JsonNode call = calls.get(0);
-        JsonNode function = call == null ? null : call.get("function");
+        JsonNode function = call == null ? null : call.get(FIELD_FUNCTION);
         if (call == null || !call.isObject() || function == null || !function.isObject()) {
             throw OpenAiClientException.invalidToolResponse();
         }
 
-        String id = textOrNull(call.get("id"));
-        String type = textOrNull(call.get("type"));
-        String name = textOrNull(function.get("name"));
-        String arguments = textOrNull(function.get("arguments"));
-        if (id == null || id.isBlank() || !"function".equals(type) || name == null || name.isBlank()) {
+        String id = textOrNull(call.get(FIELD_ID));
+        String type = textOrNull(call.get(FIELD_TYPE));
+        String name = textOrNull(function.get(FIELD_NAME));
+        String arguments = textOrNull(function.get(FIELD_ARGUMENTS));
+        if (id == null || id.isBlank() || !FUNCTION_KIND.equals(type) || name == null || name.isBlank()) {
             throw OpenAiClientException.invalidToolResponse();
         }
         return new ToolDecision(
@@ -92,7 +126,7 @@ public class OpenAiChatProtocol {
     public List<ChatStreamSignal> decodeStreamEventSignals(ServerSentEvent<String> event) {
         String data = event.data();
         if (data == null || data.isBlank()) return List.of();
-        if ("[DONE]".equals(data.trim())) return List.of(new ChatStreamSignal.Done());
+        if (STREAM_DONE_MARKER.equals(data.trim())) return List.of(new ChatStreamSignal.Done());
 
         final JsonNode payload;
         try {
@@ -105,14 +139,14 @@ public class OpenAiChatProtocol {
         }
 
         List<ChatStreamSignal> signals = new ArrayList<>();
-        JsonNode usage = payload.get("usage");
+        JsonNode usage = payload.get(FIELD_USAGE);
         if (usage != null && !usage.isNull()) {
             signals.add(new ChatStreamSignal.Usage(
-                    nonNegativeInteger(usage.get("prompt_tokens")),
-                    nonNegativeInteger(usage.get("completion_tokens"))));
+                    nonNegativeInteger(usage.get(FIELD_PROMPT_TOKENS)),
+                    nonNegativeInteger(usage.get(FIELD_COMPLETION_TOKENS))));
         }
 
-        JsonNode choices = payload.get("choices");
+        JsonNode choices = payload.get(FIELD_CHOICES);
         if (choices == null || choices.isNull()) {
             if (signals.isEmpty()) throw OpenAiClientException.invalidStreamResponse();
             return List.copyOf(signals);
@@ -121,14 +155,14 @@ public class OpenAiChatProtocol {
             throw OpenAiClientException.invalidStreamResponse();
         }
         if (choices.size() == 1) {
-            JsonNode delta = choices.get(0).get("delta");
+            JsonNode delta = choices.get(0).get(FIELD_DELTA);
             if (delta != null && !delta.isNull()) {
                 if (!delta.isObject()
-                        || (delta.has("tool_calls") && !delta.get("tool_calls").isNull())
-                        || (delta.has("function_call") && !delta.get("function_call").isNull())) {
+                        || (delta.has(FIELD_TOOL_CALLS) && !delta.get(FIELD_TOOL_CALLS).isNull())
+                        || (delta.has(FIELD_FUNCTION_CALL) && !delta.get(FIELD_FUNCTION_CALL).isNull())) {
                     throw OpenAiClientException.unsupportedToolStream();
                 }
-                JsonNode content = delta.get("content");
+                JsonNode content = delta.get(FIELD_CONTENT);
                 if (content != null && !content.isNull()) {
                     if (!content.isTextual()) throw OpenAiClientException.invalidTextDelta();
                     if (!content.asText().isEmpty()) signals.add(new ChatStreamSignal.Text(content.asText()));
@@ -140,40 +174,40 @@ public class OpenAiChatProtocol {
 
     private JsonNode singleMessage(JsonNode payload) {
         if (payload == null || !payload.isObject()) throw OpenAiClientException.invalidToolResponse();
-        JsonNode choices = payload.get("choices");
+        JsonNode choices = payload.get(FIELD_CHOICES);
         if (choices == null || !choices.isArray() || choices.size() != 1) {
             throw OpenAiClientException.invalidToolResponse();
         }
-        JsonNode message = choices.get(0).get("message");
+        JsonNode message = choices.get(0).get(FIELD_MESSAGE);
         if (message == null || !message.isObject()) throw OpenAiClientException.invalidToolResponse();
         return message;
     }
 
     private Map<String, Object> baseRequest(AgentRunRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", request.model().trim());
+        body.put(FIELD_MODEL, request.model().trim());
         if (request.reasoningEffort() != null && !request.reasoningEffort().trim().isEmpty()) {
-            body.put("reasoning_effort", request.reasoningEffort().trim());
+            body.put(FIELD_REASONING_EFFORT, request.reasoningEffort().trim());
         }
         return body;
     }
 
     private Map<String, Object> systemMessage() {
-        return Map.of("role", "system", "content", AgentLlmContract.systemPrompt());
+        return Map.of(FIELD_ROLE, ROLE_SYSTEM, FIELD_CONTENT, AgentLlmContract.systemPrompt());
     }
 
     private Map<String, Object> userMessage(String content) {
-        return Map.of("role", "user", "content", content);
+        return Map.of(FIELD_ROLE, ROLE_USER, FIELD_CONTENT, content);
     }
 
     private Map<String, Object> toolDefinition() {
         AgentLlmContract.WorkspaceTool tool = AgentLlmContract.workspaceTool();
         return Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", tool.name(),
-                        "description", tool.description(),
-                        "parameters", tool.parametersSchema()));
+                FIELD_TYPE, FUNCTION_KIND,
+                FIELD_FUNCTION, Map.of(
+                        FIELD_NAME, tool.name(),
+                        FIELD_DESCRIPTION, tool.description(),
+                        FIELD_PARAMETERS, tool.parametersSchema()));
     }
 
     private List<Map<String, Object>> finalMessages(
@@ -182,24 +216,24 @@ public class OpenAiChatProtocol {
             String toolResult) {
         ToolDecision.ToolCall call = decision.toolCall();
         Map<String, Object> function = Map.of(
-                "name", call.name(),
-                "arguments", call.arguments() == null ? "" : call.arguments());
+                FIELD_NAME, call.name(),
+                FIELD_ARGUMENTS, call.arguments() == null ? "" : call.arguments());
         Map<String, Object> serializedCall = Map.of(
-                "id", call.id(),
-                "type", "function",
-                "function", function);
+                FIELD_ID, call.id(),
+                FIELD_TYPE, FUNCTION_KIND,
+                FIELD_FUNCTION, function);
         Map<String, Object> assistant = new LinkedHashMap<>();
-        assistant.put("role", "assistant");
-        assistant.put("content", decision.content());
-        assistant.put("tool_calls", List.of(serializedCall));
+        assistant.put(FIELD_ROLE, ROLE_ASSISTANT);
+        assistant.put(FIELD_CONTENT, decision.content());
+        assistant.put(FIELD_TOOL_CALLS, List.of(serializedCall));
         if (decision.reasoningContent() != null && !decision.reasoningContent().isBlank()) {
-            assistant.put("reasoning_content", decision.reasoningContent());
+            assistant.put(FIELD_REASONING_CONTENT, decision.reasoningContent());
         }
         return List.of(
                 systemMessage(),
                 userMessage(request.prompt()),
                 assistant,
-                Map.of("role", "tool", "tool_call_id", call.id(), "content", toolResult));
+                Map.of(FIELD_ROLE, ROLE_TOOL, FIELD_TOOL_CALL_ID, call.id(), FIELD_CONTENT, toolResult));
     }
 
     private String textOrNull(JsonNode node) {
