@@ -53,38 +53,68 @@ public class AgentRunService {
                             Mono.fromCallable(() -> workspaceRegistry.resolve(
                                             request.workspace().id(), request.workspace().path()))
                     .flatMapMany(workspace -> chatClient.requestInitialDecision(request)
-                            .flatMapMany(decision -> {
-                                if (!decision.hasToolCall()) {
-                                    String content = decision.content();
-                                    if (content == null || content.isBlank()) {
-                                        return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
-                                    }
-                                    return Flux.just(
-                                            new AgentEvent.TextDelta(content),
-                                            completed(startedAt, 1, List.of()));
-                                }
-
-                                ToolDecision.ToolCall call = decision.toolCall();
-                                ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
-                                /*
-                                 * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
-                                 * 设计意图：由运行流程统一推进工具阶段，而不是让工具执行方法直接生成 Agent 事件流。
-                                 * 关键约束：必须先发送 ToolStarted，再执行工具；ToolFinished 必须先于最终文本。
-                                 */
-                                return Flux.concat(
-                                        Flux.just(new AgentEvent.ToolStarted(
-                                                call.id(), tool.displayName(), null)),
-                                        toolRegistry.execute(tool, workspace, call.arguments())
-                                                .flatMapMany(outcome -> Flux.concat(
-                                                        Flux.just(new AgentEvent.ToolFinished(
-                                                                call.id(), outcome.ok() ? "completed" : "failed",
-                                                                outcome.presentation())),
-                                                        Flux.just(new AgentEvent.Status("正在整理结果")),
-                                                        streamFinal(request, decision, call, outcome, startedAt))));
-                            }))
+                            .flatMapMany(decision -> handleDecision(
+                                    request, workspace, decision, startedAt)))
                     )
                     .onErrorResume(exceptionMapper::mapException);
         });
+    }
+
+    private Flux<AgentEvent> handleDecision(
+            AgentRunRequest request,
+            AuthorizedWorkspace workspace,
+            ToolDecision decision,
+            long startedAt) {
+        if (!decision.hasToolCall()) {
+            return directAnswerFlow(decision, startedAt);
+        }
+        return toolCallFlow(request, workspace, decision, startedAt);
+    }
+
+    private Flux<AgentEvent> directAnswerFlow(
+            ToolDecision decision,
+            long startedAt) {
+        String content = decision.content();
+        if (content == null || content.isBlank()) {
+            return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
+        }
+        return Flux.just(
+                new AgentEvent.TextDelta(content),
+                completed(startedAt, 1, List.of()));
+    }
+
+    private Flux<AgentEvent> toolCallFlow(
+            AgentRunRequest request,
+            AuthorizedWorkspace workspace,
+            ToolDecision decision,
+            long startedAt) {
+        ToolDecision.ToolCall call = decision.toolCall();
+        ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
+        /*
+         * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
+         * 设计意图：由运行流程统一推进工具阶段，而不是让工具执行方法直接生成 Agent 事件流。
+         * 关键约束：必须先发送 ToolStarted，再执行工具；ToolFinished 必须先于最终文本。
+         */
+        return Flux.concat(
+                Flux.just(new AgentEvent.ToolStarted(
+                        call.id(), tool.displayName(), null)),
+                toolRegistry.execute(tool, workspace, call.arguments())
+                        .flatMapMany(outcome -> afterToolExecution(
+                                request, decision, call, outcome, startedAt)));
+    }
+
+    private Flux<AgentEvent> afterToolExecution(
+            AgentRunRequest request,
+            ToolDecision decision,
+            ToolDecision.ToolCall call,
+            ToolOutcome outcome,
+            long startedAt) {
+        return Flux.concat(
+                Flux.just(new AgentEvent.ToolFinished(
+                        call.id(), outcome.ok() ? "completed" : "failed",
+                        outcome.presentation())),
+                Flux.just(new AgentEvent.Status("正在整理结果")),
+                streamFinal(request, decision, call, outcome, startedAt));
     }
 
     private Flux<AgentEvent> streamFinal(
