@@ -1,7 +1,6 @@
 package com.zlzcode.codeagent.tool.registry;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.tool.definition.ToolDefinition;
 import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
 import com.zlzcode.codeagent.tool.handler.ToolHandler;
@@ -42,13 +41,19 @@ public final class ToolRegistry {
             String arguments) {
         if (!tool.available()) {
             return Mono.just(ToolOutcome.failure(
-                    objectMapper, "TOOL_NOT_AVAILABLE", "未执行未知工具"));
+                    objectMapper,
+                    "TOOL_NOT_AVAILABLE",
+                    "未执行未知工具",
+                    "The requested tool is not available."));
         }
 
         ToolDefinition.Validation validation = tool.definition().validate(arguments);
         if (!validation.valid()) {
             return Mono.just(ToolOutcome.failure(
-                    objectMapper, validation.code(), validation.presentation()));
+                    objectMapper,
+                    validation.code(),
+                    validation.presentation(),
+                    "The tool arguments are invalid."));
         }
         return tool.handler().execute(workspace, arguments);
     }

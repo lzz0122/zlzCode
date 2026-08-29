@@ -46,7 +46,10 @@ public class WorkspaceOverviewService implements ToolHandler {
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(EXECUTION_TIMEOUT)
                 .onErrorReturn(ToolOutcome.failure(
-                        objectMapper, "TOOL_TIMEOUT", "读取工作区超时"));
+                        objectMapper,
+                        "TOOL_TIMEOUT",
+                        "读取工作区超时",
+                        "The selected workspace could not be listed safely."));
     }
 
     private ToolOutcome scan(Path workspaceRoot) {
@@ -60,7 +63,9 @@ public class WorkspaceOverviewService implements ToolHandler {
             root = pathGuard.canonicalDirectory(workspaceRoot);
         } catch (IOException | RuntimeException exception) {
             return ToolOutcome.failure(objectMapper,
-                    "WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
+                    "WORKSPACE_UNAVAILABLE",
+                    "无法安全读取所选工作区",
+                    "The selected workspace could not be listed safely.");
         }
 
         try {
@@ -87,7 +92,9 @@ public class WorkspaceOverviewService implements ToolHandler {
             }
         } catch (IOException | RuntimeException exception) {
             return ToolOutcome.failure(objectMapper,
-                    "WORKSPACE_PERMISSION_DENIED", "无法安全读取所选工作区");
+                    "WORKSPACE_PERMISSION_DENIED",
+                    "无法安全读取所选工作区",
+                    "The selected workspace could not be listed safely.");
         }
     }
 
