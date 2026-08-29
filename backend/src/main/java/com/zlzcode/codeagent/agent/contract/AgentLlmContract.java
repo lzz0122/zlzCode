@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
 
 /**
- * Agent 与 LLM 之间的语义契约。OpenAI JSON 的具体编码由 OpenAiChatContract 负责。
+ * Agent 与 LLM 之间的语义契约。OpenAI JSON 的具体编码由 OpenAiChatProtocol 负责。
  */
 public final class AgentLlmContract {
 
