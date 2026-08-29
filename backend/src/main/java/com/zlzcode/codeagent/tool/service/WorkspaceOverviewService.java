@@ -1,25 +1,31 @@
-package com.zlzcode.codeagent.tool;
+package com.zlzcode.codeagent.tool.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zlzcode.codeagent.tool.handler.ToolHandler;
+import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.workspace.security.WorkspacePathGuard;
+import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 @Service
-public class WorkspaceOverviewService {
+public class WorkspaceOverviewService implements ToolHandler {
 
     private static final int MAX_ENTRIES = 200;
     private static final int MAX_RESULT_CHARS = 20_000;
+    private static final Duration EXECUTION_TIMEOUT = Duration.ofSeconds(2);
 
     private final ObjectMapper objectMapper;
     private final WorkspacePathGuard pathGuard;
@@ -30,16 +36,31 @@ public class WorkspaceOverviewService {
     }
 
     /*
-     * 背景：工作区规模和内容不受服务控制，递归或无界扫描会拖慢请求并向模型暴露过多目录信息。
-     * 设计意图：只读取根目录，按稳定顺序输出，并同时限制条目数和序列化字符数。
-     * 关键约束：不得改为递归扫描或跟随链接；结果必须维持 200 个条目和 20000 个字符的上限。
+     * 背景：工作区扫描使用阻塞式文件系统 API，不能直接占用 WebFlux 的事件线程。
+     * 设计意图：工具服务同时作为 Handler，统一负责调度、超时和扫描结果收口，避免增加仅转发的适配类。
+     * 关键约束：扫描必须运行在 boundedElastic 且保留两秒超时，否则单次慢目录会阻塞其他 Agent 请求。
      */
-    public Result list(Path workspaceRoot) {
+    @Override
+    public Mono<ToolOutcome> execute(AuthorizedWorkspace workspace, String arguments) {
+        return Mono.fromCallable(() -> scan(workspace.root()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(EXECUTION_TIMEOUT)
+                .onErrorReturn(ToolOutcome.failure(
+                        objectMapper, "TOOL_TIMEOUT", "读取工作区超时"));
+    }
+
+    private ToolOutcome scan(Path workspaceRoot) {
+        /*
+         * 背景：工作区规模和内容不受服务控制，递归或无界扫描会拖慢请求并向模型暴露过多目录信息。
+         * 设计意图：只读取根目录，按稳定顺序输出，并同时限制条目数和序列化字符数。
+         * 关键约束：不得改为递归扫描或跟随链接；结果必须维持 200 个条目和 20000 个字符的上限。
+         */
         final Path root;
         try {
             root = pathGuard.canonicalDirectory(workspaceRoot);
         } catch (IOException | RuntimeException exception) {
-            return failure("WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
+            return ToolOutcome.failure(objectMapper,
+                    "WORKSPACE_UNAVAILABLE", "无法安全读取所选工作区");
         }
 
         try {
@@ -59,13 +80,14 @@ public class WorkspaceOverviewService {
                 String content = objectMapper.writeValueAsString(new Overview(true, entries, truncated));
                 if (content.length() <= MAX_RESULT_CHARS || entries.isEmpty()) {
                     String detail = presentation(entries, truncated);
-                    return new Result(true, content, detail);
+                    return new ToolOutcome(true, content, detail);
                 }
                 entries.remove(entries.size() - 1);
                 truncated = true;
             }
         } catch (IOException | RuntimeException exception) {
-            return failure("WORKSPACE_PERMISSION_DENIED", "无法安全读取所选工作区");
+            return ToolOutcome.failure(objectMapper,
+                    "WORKSPACE_PERMISSION_DENIED", "无法安全读取所选工作区");
         }
     }
 
@@ -101,20 +123,6 @@ public class WorkspaceOverviewService {
         if (links > 0) detail.append("、").append(links).append(" 个链接");
         if (truncated) detail.append("；结果已截断");
         return detail.toString();
-    }
-
-    private Result failure(String code, String presentation) {
-        try {
-            String content = objectMapper.writeValueAsString(
-                    Map.of("ok", false, "error", Map.of("code", code,
-                            "message", "The selected workspace could not be listed safely.")));
-            return new Result(false, content, presentation);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("无法编码工作区工具结果", exception);
-        }
-    }
-
-    public record Result(boolean ok, String modelContent, String presentation) {
     }
 
     private record Entry(String name, String kind) {

@@ -11,7 +11,7 @@ import java.util.Map;
  * 工作区概览工具的唯一元数据定义。
  */
 @Component
-public final class WorkspaceOverviewToolDefinition {
+public final class WorkspaceOverviewToolDefinition implements ToolDefinition {
 
     private static final String NAME = "list_workspace_entries";
     private static final String DISPLAY_NAME = "查看工作区根目录";
@@ -30,18 +30,22 @@ public final class WorkspaceOverviewToolDefinition {
         this.objectMapper = objectMapper;
     }
 
+    @Override
     public String name() {
         return NAME;
     }
 
+    @Override
     public String displayName() {
         return DISPLAY_NAME;
     }
 
+    @Override
     public String description() {
         return DESCRIPTION;
     }
 
+    @Override
     public Map<String, Object> parametersSchema() {
         return PARAMETERS_SCHEMA;
     }
@@ -51,13 +55,17 @@ public final class WorkspaceOverviewToolDefinition {
      * 设计意图：由工具定义同时拥有参数契约和校验规则，而不是让 Agent 编排层重复解释 Schema。
      * 关键约束：参数必须是有效的 JSON 对象且不能包含字段；放宽为 null、空字符串或任意对象都会破坏工具边界。
      */
-    public boolean acceptsArguments(String arguments) {
-        if (arguments == null || arguments.isBlank()) return false;
+    @Override
+    public Validation validate(String arguments) {
+        if (arguments == null || arguments.isBlank()) return Validation.rejected(
+                "TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问");
         try {
             JsonNode node = objectMapper.readTree(arguments);
-            return node != null && node.isObject() && node.isEmpty();
+            return node != null && node.isObject() && node.isEmpty()
+                    ? Validation.accepted()
+                    : Validation.rejected("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问");
         } catch (Exception exception) {
-            return false;
+            return Validation.rejected("TOOL_ARGUMENTS_INVALID", "工具参数无效，未执行工作区访问");
         }
     }
 }

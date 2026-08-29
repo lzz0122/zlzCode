@@ -10,7 +10,8 @@ import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
-import com.zlzcode.codeagent.tool.runtime.WorkspaceOverviewTool;
+import com.zlzcode.codeagent.tool.model.ToolOutcome;
+import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -25,15 +26,15 @@ public class AgentRunService {
 
     private final OpenAiChatClient chatClient;
     private final WorkspaceRegistry workspaceRegistry;
-    private final WorkspaceOverviewTool workspaceTool;
+    private final ToolRegistry toolRegistry;
 
     public AgentRunService(
             OpenAiChatClient chatClient,
             WorkspaceRegistry workspaceRegistry,
-            WorkspaceOverviewTool workspaceTool) {
+            ToolRegistry toolRegistry) {
         this.chatClient = chatClient;
         this.workspaceRegistry = workspaceRegistry;
-        this.workspaceTool = workspaceTool;
+        this.toolRegistry = toolRegistry;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
@@ -80,14 +81,15 @@ public class AgentRunService {
         }
 
         ToolDecision.ToolCall call = decision.toolCall();
+        ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
         /*
          * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
          * 设计意图：显式串联“开始、结束、整理状态、最终文本”，而不是并行合并这些异步事件。
          * 关键约束：该顺序不能调整；ToolFinished 必须先于最终文本，否则前端会留下状态错乱的工具卡。
-         */
+        */
         return Flux.concat(
-                Flux.just(new AgentEvent.ToolStarted(call.id(), workspaceTool.displayName(), null)),
-                workspaceTool.execute(workspace, call)
+                Flux.just(new AgentEvent.ToolStarted(call.id(), tool.displayName(), null)),
+                toolRegistry.execute(tool, workspace, call.arguments())
                         .flatMapMany(outcome -> Flux.concat(
                                 Flux.just(new AgentEvent.ToolFinished(
                                         call.id(), outcome.ok() ? "completed" : "failed",
@@ -100,7 +102,7 @@ public class AgentRunService {
             AgentRunRequest request,
             ToolDecision decision,
             ToolDecision.ToolCall call,
-            WorkspaceOverviewTool.Result outcome,
+            ToolOutcome outcome,
             long startedAt) {
         /*
          * 背景：上游可能在未发送 [DONE]、未产生正文或只发送 usage 时提前结束流。

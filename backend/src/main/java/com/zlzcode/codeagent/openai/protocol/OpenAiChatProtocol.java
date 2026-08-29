@@ -7,6 +7,7 @@ import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
+import com.zlzcode.codeagent.tool.definition.ToolDefinition;
 import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.ServerSentEvent;
@@ -61,12 +62,12 @@ public class OpenAiChatProtocol {
     private static final String STREAM_DONE_MARKER = "[DONE]";
 
     private final ObjectMapper objectMapper;
-    private final WorkspaceOverviewToolDefinition workspaceTool;
+    private final ToolDefinition workspaceTool;
 
     @Autowired
     public OpenAiChatProtocol(
             ObjectMapper objectMapper,
-            WorkspaceOverviewToolDefinition workspaceTool) {
+            ToolDefinition workspaceTool) {
         this.objectMapper = objectMapper;
         this.workspaceTool = workspaceTool;
     }
