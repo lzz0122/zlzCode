@@ -91,7 +91,7 @@ public class AgentRunService {
                                         request.openai(), llmRequest(
                                                 request,
                                                 history.snapshot(),
-                                                List.of(new LlmRequest.AvailableTool(
+                                                List.of(new LlmRequest.ToolDeclaration(
                                                         workspaceTool.name(),
                                                         workspaceTool.description(),
                                                         workspaceTool.parametersSchema()))))
@@ -255,7 +255,7 @@ public class AgentRunService {
     private LlmRequest llmRequest(
             AgentRunRequest request,
             List<LlmMessage> messages,
-            List<LlmRequest.AvailableTool> availableTools) {
+            List<LlmRequest.ToolDeclaration> availableTools) {
         return new LlmRequest(
                 request.model(), request.reasoningEffort(), messages, availableTools);
     }

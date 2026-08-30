@@ -136,7 +136,7 @@ public class OpenAiChatProtocol {
         List<LlmStreamEvent> events = new ArrayList<>();
         JsonNode usage = payload.get(FIELD_USAGE);
         if (usage != null && !usage.isNull()) {
-            events.add(new LlmStreamEvent.Usage(
+            events.add(new LlmStreamEvent.TokenUsage(
                     nonNegativeInteger(usage.get(FIELD_PROMPT_TOKENS)),
                     nonNegativeInteger(usage.get(FIELD_COMPLETION_TOKENS))));
         }
@@ -166,14 +166,14 @@ public class OpenAiChatProtocol {
                 if (content != null && !content.isNull()) {
                     if (!content.isTextual()) throw OpenAiIntegrationException.invalidTextDelta();
                     if (!content.asText().isEmpty()) {
-                        events.add(new LlmStreamEvent.TextDelta(content.asText()));
+                        events.add(new LlmStreamEvent.AssistantTextChunk(content.asText()));
                     }
                 }
                 JsonNode reasoning = delta.get(FIELD_REASONING_CONTENT);
                 if (reasoning != null && !reasoning.isNull()) {
                     if (!reasoning.isTextual()) throw OpenAiIntegrationException.invalidTextDelta();
                     if (!reasoning.asText().isEmpty()) {
-                        events.add(new LlmStreamEvent.HiddenReasoningDelta(reasoning.asText()));
+                        events.add(new LlmStreamEvent.InternalReasoningChunk(reasoning.asText()));
                     }
                 }
                 JsonNode toolCalls = delta.get(FIELD_TOOL_CALLS);
@@ -182,7 +182,7 @@ public class OpenAiChatProtocol {
                         throw OpenAiIntegrationException.invalidStreamResponse();
                     }
                     for (JsonNode toolCall : toolCalls) {
-                        events.add(decodeToolCallDelta(toolCall));
+                        events.add(decodeToolCallFragment(toolCall));
                     }
                 }
             }
@@ -191,7 +191,7 @@ public class OpenAiChatProtocol {
                 if (!finishReason.isTextual()) {
                     throw OpenAiIntegrationException.invalidStreamResponse();
                 }
-                events.add(new LlmStreamEvent.Finish(mapFinishReason(finishReason.asText())));
+                events.add(new LlmStreamEvent.GenerationFinished(mapStopReason(finishReason.asText())));
             }
         }
         return new DecodedStreamFrame(events, false);
@@ -217,7 +217,7 @@ public class OpenAiChatProtocol {
         return body;
     }
 
-    private Map<String, Object> encodeToolDefinition(LlmRequest.AvailableTool tool) {
+    private Map<String, Object> encodeToolDefinition(LlmRequest.ToolDeclaration tool) {
         return Map.of(
                 FIELD_TYPE, FUNCTION_KIND,
                 FIELD_FUNCTION, Map.of(
@@ -231,7 +231,7 @@ public class OpenAiChatProtocol {
     }
 
     private Map<String, Object> encodeMessage(LlmMessage message) {
-        if (message instanceof LlmMessage.Text text) {
+        if (message instanceof LlmMessage.TextMessage text) {
             return Map.of(
                     FIELD_ROLE, switch (text.role()) {
                         case SYSTEM -> ROLE_SYSTEM;
@@ -240,13 +240,13 @@ public class OpenAiChatProtocol {
                     },
                     FIELD_CONTENT, text.content());
         }
-        if (message instanceof LlmMessage.ToolResult result) {
+        if (message instanceof LlmMessage.ToolResultMessage result) {
             return Map.of(
                     FIELD_ROLE, ROLE_TOOL,
                     FIELD_TOOL_CALL_ID, result.toolCallId(),
                     FIELD_CONTENT, result.content());
         }
-        if (message instanceof LlmMessage.AssistantToolCalls assistant) {
+        if (message instanceof LlmMessage.AssistantToolCallsMessage assistant) {
             Map<String, Object> encoded = new LinkedHashMap<>();
             encoded.put(FIELD_ROLE, ROLE_ASSISTANT);
             encoded.put(FIELD_CONTENT, assistant.content());
@@ -282,7 +282,7 @@ public class OpenAiChatProtocol {
         return node.intValue();
     }
 
-    private LlmStreamEvent.ToolCallDelta decodeToolCallDelta(JsonNode call) {
+    private LlmStreamEvent.ToolCallFragment decodeToolCallFragment(JsonNode call) {
         if (call == null || !call.isObject()) {
             throw OpenAiIntegrationException.invalidStreamResponse();
         }
@@ -307,7 +307,7 @@ public class OpenAiChatProtocol {
         if (id == null && name == null && arguments == null) {
             throw OpenAiIntegrationException.invalidStreamResponse();
         }
-        return new LlmStreamEvent.ToolCallDelta(index, id, name, arguments);
+        return new LlmStreamEvent.ToolCallFragment(index, id, name, arguments);
     }
 
     private String optionalStreamText(JsonNode node) {
@@ -316,13 +316,13 @@ public class OpenAiChatProtocol {
         return node.asText();
     }
 
-    private LlmStreamEvent.Finish.Reason mapFinishReason(String reason) {
+    private LlmStreamEvent.StopReason mapStopReason(String reason) {
         return switch (reason) {
-            case "stop" -> LlmStreamEvent.Finish.Reason.STOP;
-            case "tool_calls" -> LlmStreamEvent.Finish.Reason.TOOL_CALLS;
-            case "length" -> LlmStreamEvent.Finish.Reason.LENGTH;
-            case "content_filter" -> LlmStreamEvent.Finish.Reason.CONTENT_FILTER;
-            default -> LlmStreamEvent.Finish.Reason.OTHER;
+            case "stop" -> LlmStreamEvent.StopReason.STOP;
+            case "tool_calls" -> LlmStreamEvent.StopReason.TOOL_CALLS;
+            case "length" -> LlmStreamEvent.StopReason.LENGTH;
+            case "content_filter" -> LlmStreamEvent.StopReason.CONTENT_FILTER;
+            default -> LlmStreamEvent.StopReason.OTHER;
         };
     }
 
