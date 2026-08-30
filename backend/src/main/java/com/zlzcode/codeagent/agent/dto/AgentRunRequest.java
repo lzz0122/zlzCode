@@ -24,7 +24,7 @@ public record AgentRunRequest(
         @JsonProperty("reasoningEffort") @Size(max = 64) String reasoningEffort,
         @JsonProperty("maxToolCalls") @Min(1) @Max(15) Integer maxToolCalls,
         @NotNull @Valid OpenAiConnectionInput openai,
-        @Size(max = 40) List<@Valid ConversationMessageInput> history) {
+        List<ConversationMessageInput> history) {
 
     public AgentRunRequest {
         maxToolCalls = maxToolCalls == null ? 5 : maxToolCalls;
