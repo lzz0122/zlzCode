@@ -1,6 +1,7 @@
 package com.zlzcode.codeagent.agent.history;
 
-import com.zlzcode.codeagent.agent.model.ToolDecision;
+import com.zlzcode.codeagent.agent.model.LlmMessage;
+import com.zlzcode.codeagent.agent.model.LlmToolCall;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -13,17 +14,17 @@ import java.util.Set;
  */
 public final class AgentHistory {
 
-    private final List<Message> messages;
+    private final List<LlmMessage> messages;
     private final Set<String> knownCallIds = new HashSet<>();
     private final Set<String> completedCallIds = new HashSet<>();
     private final List<String> outstandingCallIds = new ArrayList<>();
 
-    AgentHistory(List<Message> initialMessages) {
+    AgentHistory(List<LlmMessage> initialMessages) {
         if (initialMessages == null || initialMessages.isEmpty()) {
             throw new IllegalArgumentException("Agent history requires initial messages");
         }
         this.messages = new ArrayList<>(initialMessages.size());
-        for (Message message : initialMessages) {
+        for (LlmMessage message : initialMessages) {
             appendInitial(message);
         }
         if (!outstandingCallIds.isEmpty()) {
@@ -31,25 +32,25 @@ public final class AgentHistory {
         }
     }
 
-    public List<Message> snapshot() {
+    public List<LlmMessage> snapshot() {
         return List.copyOf(messages);
     }
 
     public void appendAssistantToolCalls(
             String content,
             String reasoningContent,
-            List<ToolDecision.ToolCall> toolCalls) {
+            List<LlmToolCall> toolCalls) {
         if (!outstandingCallIds.isEmpty()) {
             throw new IllegalStateException("Previous tool calls are still outstanding");
         }
-        AssistantToolCallsMessage message = new AssistantToolCallsMessage(
+        LlmMessage.AssistantToolCalls message = new LlmMessage.AssistantToolCalls(
                 content, reasoningContent, toolCalls);
         registerToolCalls(message.toolCalls());
         messages.add(message);
     }
 
     public void appendToolResult(String callId, String content) {
-        ToolResultMessage message = new ToolResultMessage(callId, content);
+        LlmMessage.ToolResult message = new LlmMessage.ToolResult(callId, content);
         completeToolCall(message.toolCallId());
         messages.add(message);
     }
@@ -61,32 +62,32 @@ public final class AgentHistory {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("Final assistant content cannot be blank");
         }
-        messages.add(new TextMessage(TextRole.ASSISTANT, content));
+        messages.add(new LlmMessage.Text(LlmMessage.Role.ASSISTANT, content));
     }
 
-    private void appendInitial(Message message) {
+    private void appendInitial(LlmMessage message) {
         Objects.requireNonNull(message, "Agent history message cannot be null");
-        if (message instanceof AssistantToolCallsMessage assistant) {
+        if (message instanceof LlmMessage.AssistantToolCalls assistant) {
             if (!outstandingCallIds.isEmpty()) {
                 throw new IllegalArgumentException("Initial tool-call groups cannot overlap");
             }
             registerToolCalls(assistant.toolCalls());
-        } else if (message instanceof ToolResultMessage result) {
+        } else if (message instanceof LlmMessage.ToolResult result) {
             completeToolCall(result.toolCallId());
-        } else if (message instanceof TextMessage text
-                && text.role() == TextRole.ASSISTANT
+        } else if (message instanceof LlmMessage.Text text
+                && text.role() == LlmMessage.Role.ASSISTANT
                 && !outstandingCallIds.isEmpty()) {
             throw new IllegalArgumentException("Initial assistant text precedes outstanding tool results");
         }
         messages.add(message);
     }
 
-    private void registerToolCalls(List<ToolDecision.ToolCall> toolCalls) {
+    private void registerToolCalls(List<LlmToolCall> toolCalls) {
         if (toolCalls == null || toolCalls.isEmpty()) {
             throw new IllegalArgumentException("Assistant tool-call message cannot be empty");
         }
         Set<String> newIds = new HashSet<>();
-        for (ToolDecision.ToolCall toolCall : toolCalls) {
+        for (LlmToolCall toolCall : toolCalls) {
             if (toolCall == null || toolCall.id() == null || toolCall.id().isBlank()) {
                 throw new IllegalArgumentException("Tool call ID cannot be blank");
             }
@@ -95,7 +96,7 @@ public final class AgentHistory {
             }
         }
         knownCallIds.addAll(newIds);
-        outstandingCallIds.addAll(toolCalls.stream().map(ToolDecision.ToolCall::id).toList());
+        outstandingCallIds.addAll(toolCalls.stream().map(LlmToolCall::id).toList());
     }
 
     private void completeToolCall(String callId) {
@@ -112,58 +113,4 @@ public final class AgentHistory {
         completedCallIds.add(callId);
     }
 
-    public sealed interface Message permits TextMessage, AssistantToolCallsMessage, ToolResultMessage {
-    }
-
-    public enum TextRole {
-        SYSTEM,
-        USER,
-        ASSISTANT
-    }
-
-    public record TextMessage(TextRole role, String content) implements Message {
-
-        public TextMessage {
-            Objects.requireNonNull(role, "Text message role cannot be null");
-            if (content == null || content.isBlank()) {
-                throw new IllegalArgumentException("Text message content cannot be blank");
-            }
-        }
-
-        @Override
-        public String toString() {
-            return "TextMessage[role=" + role + ", content=<redacted>]";
-        }
-    }
-
-    public record AssistantToolCallsMessage(
-            String content,
-            String reasoningContent,
-            List<ToolDecision.ToolCall> toolCalls) implements Message {
-
-        public AssistantToolCallsMessage {
-            toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
-        }
-
-        @Override
-        public String toString() {
-            return "AssistantToolCallsMessage[content=<redacted>, reasoningContent=<redacted>, toolCalls="
-                    + toolCalls.size() + "]";
-        }
-    }
-
-    public record ToolResultMessage(String toolCallId, String content) implements Message {
-
-        public ToolResultMessage {
-            if (toolCallId == null || toolCallId.isBlank()) {
-                throw new IllegalArgumentException("Tool result call ID cannot be blank");
-            }
-            Objects.requireNonNull(content, "Tool result content cannot be null");
-        }
-
-        @Override
-        public String toString() {
-            return "ToolResultMessage[toolCallId=" + toolCallId + ", content=<redacted>]";
-        }
-    }
 }

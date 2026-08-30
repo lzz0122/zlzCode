@@ -6,7 +6,10 @@ import com.zlzcode.codeagent.agent.error.AgentRunExceptionMapper;
 import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
 import com.zlzcode.codeagent.agent.history.AgentHistory;
 import com.zlzcode.codeagent.agent.history.ConversationHistoryBuilder;
-import com.zlzcode.codeagent.agent.model.ToolDecision;
+import com.zlzcode.codeagent.agent.model.LlmMessage;
+import com.zlzcode.codeagent.agent.model.LlmRequest;
+import com.zlzcode.codeagent.agent.model.LlmResponse;
+import com.zlzcode.codeagent.agent.model.LlmToolCall;
 import com.zlzcode.codeagent.agent.stream.AgentFinalAnswerStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
@@ -84,31 +87,37 @@ public class AgentRunService {
                         new AgentEvent.Status("正在分析")),
                 Mono.fromCallable(() -> workspaceRegistry.resolve(run.workspaceId()))
                         .subscribeOn(Schedulers.boundedElastic())
-                        .flatMapMany(workspace -> chatClient.requestInitialDecision(
-                                        request, history.snapshot())
-                                .flatMapMany(decision -> handleDecision(
-                                        request, run, workspace, decision, history, startedAt))));
+                        .flatMapMany(workspace -> chatClient.requestInitialResponse(
+                                        request.openai(), llmRequest(
+                                                request,
+                                                history.snapshot(),
+                                                List.of(new LlmRequest.AvailableTool(
+                                                        workspaceTool.name(),
+                                                        workspaceTool.description(),
+                                                        workspaceTool.parametersSchema()))))
+                                .flatMapMany(response -> handleResponse(
+                                        request, run, workspace, response, history, startedAt))));
     }
 
-    private Flux<AgentEvent> handleDecision(
+    private Flux<AgentEvent> handleResponse(
             AgentRunRequest request,
             SessionService.RunSession run,
             AuthorizedWorkspace workspace,
-            ToolDecision decision,
+            LlmResponse response,
             AgentHistory history,
             long startedAt) {
-        if (!decision.hasToolCall()) {
-            return directAnswerFlow(run, decision, history, startedAt);
+        if (!response.hasToolCalls()) {
+            return directAnswerFlow(run, response, history, startedAt);
         }
-        return toolCallFlow(request, run, workspace, decision, history, startedAt);
+        return toolCallFlow(request, run, workspace, response, history, startedAt);
     }
 
     private Flux<AgentEvent> directAnswerFlow(
             SessionService.RunSession run,
-            ToolDecision decision,
+            LlmResponse response,
             AgentHistory history,
             long startedAt) {
-        String content = decision.content();
+        String content = response.content();
         if (content == null || content.isBlank()) {
             return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
         }
@@ -122,12 +131,12 @@ public class AgentRunService {
             AgentRunRequest request,
             SessionService.RunSession run,
             AuthorizedWorkspace workspace,
-            ToolDecision decision,
+            LlmResponse response,
             AgentHistory history,
             long startedAt) {
-        ToolDecision.ToolCall call = decision.toolCall();
+        LlmToolCall call = response.toolCalls().getFirst();
         history.appendAssistantToolCalls(
-                decision.content(), decision.reasoningContent(), List.of(call));
+                response.content(), response.hiddenReasoning(), List.of(call));
         ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
         /*
          * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
@@ -145,7 +154,7 @@ public class AgentRunService {
     private Flux<AgentEvent> afterToolExecution(
             AgentRunRequest request,
             SessionService.RunSession run,
-            ToolDecision.ToolCall call,
+            LlmToolCall call,
             ToolOutcome outcome,
             AgentHistory history,
             long startedAt) {
@@ -156,7 +165,10 @@ public class AgentRunService {
                         outcome.presentation())),
                 Flux.just(new AgentEvent.Status("正在整理结果")),
                 finalAnswerStreamProcessor.processFinalAnswer(
-                                chatClient.requestFinalAnswer(request, history.snapshot()), history)
+                                chatClient.requestFinalAnswer(
+                                        request.openai(),
+                                        llmRequest(request, history.snapshot(), List.of())),
+                                history)
                         .concatMap(output -> mapFinalAnswerOutput(
                                 output, run, call, outcome, startedAt)));
     }
@@ -164,7 +176,7 @@ public class AgentRunService {
     private Mono<AgentEvent> mapFinalAnswerOutput(
             AgentFinalAnswerStreamProcessor.Output output,
             SessionService.RunSession run,
-            ToolDecision.ToolCall call,
+            LlmToolCall call,
             ToolOutcome outcome,
             long startedAt) {
         if (output instanceof AgentFinalAnswerStreamProcessor.Output.Text text) {
@@ -238,6 +250,14 @@ public class AgentRunService {
         long durationMs = Math.max(1L, Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
         return new AgentEvent.Completed(
                 new AgentEvent.RunMetrics(steps, durationMs, inputTokens, outputTokens), history);
+    }
+
+    private LlmRequest llmRequest(
+            AgentRunRequest request,
+            List<LlmMessage> messages,
+            List<LlmRequest.AvailableTool> availableTools) {
+        return new LlmRequest(
+                request.model(), request.reasoningEffort(), messages, availableTools);
     }
 
 }
