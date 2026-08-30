@@ -9,3 +9,7 @@ spring:
 server:
   address: 127.0.0.1
   port: 8000
+
+codeagent:
+  session:
+    directory: ${CODEAGENT_SESSION_DIRECTORY:}

@@ -10,6 +10,8 @@ import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.agent.stream.AgentFinalAnswerStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
+import com.zlzcode.codeagent.session.model.Session;
+import com.zlzcode.codeagent.session.service.SessionService;
 import com.zlzcode.codeagent.tool.definition.ToolDefinition;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
@@ -18,6 +20,7 @@ import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.List;
@@ -31,6 +34,7 @@ public class AgentRunService {
     private final AgentRunExceptionMapper exceptionMapper;
     private final AgentFinalAnswerStreamProcessor finalAnswerStreamProcessor;
     private final ConversationHistoryBuilder historyBuilder;
+    private final SessionService sessionService;
     private final ToolDefinition workspaceTool;
 
     public AgentRunService(
@@ -40,6 +44,7 @@ public class AgentRunService {
             AgentRunExceptionMapper exceptionMapper,
             AgentFinalAnswerStreamProcessor finalAnswerStreamProcessor,
             ConversationHistoryBuilder historyBuilder,
+            SessionService sessionService,
             ToolDefinition workspaceTool) {
         this.chatClient = chatClient;
         this.workspaceRegistry = workspaceRegistry;
@@ -47,14 +52,11 @@ public class AgentRunService {
         this.exceptionMapper = exceptionMapper;
         this.finalAnswerStreamProcessor = finalAnswerStreamProcessor;
         this.historyBuilder = historyBuilder;
+        this.sessionService = sessionService;
         this.workspaceTool = workspaceTool;
     }
 
     public Flux<AgentEvent> run(AgentRunRequest request) {
-        AgentHistory history = historyBuilder.build(
-                AgentLlmContract.systemPrompt(workspaceTool.name()),
-                request.history(),
-                request.prompt());
         /*
          * 背景：Agent 通过 SSE 向前端持续发送事件，内部异常若直接逃逸会中断 HTTP 响应并暴露实现细节。
          * 设计意图：在服务边界把已知异常映射为稳定的公开错误事件，而不是把堆栈交给 Web 层处理。
@@ -62,32 +64,47 @@ public class AgentRunService {
          */
         return Flux.defer(() -> {
             long startedAt = System.nanoTime();
-            return Flux.concat(
-                            Flux.just(new AgentEvent.Status("正在发送"),
-                                    new AgentEvent.Status("正在分析")),
-                            Mono.fromCallable(() -> workspaceRegistry.resolve(
-                                            request.workspace().id(), request.workspace().path()))
-                    .flatMapMany(workspace -> chatClient.requestInitialDecision(request, history.snapshot())
-                            .flatMapMany(decision -> handleDecision(
-                                    request, workspace, decision, history, startedAt)))
-                    )
-                    .onErrorResume(exceptionMapper::mapException);
-        });
+            return Mono.fromCallable(() -> sessionService.beginRun(
+                            request.sessionId(), request.runId(), request.prompt()))
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .flatMapMany(run -> runWithSession(request, run, startedAt));
+        }).onErrorResume(exceptionMapper::mapException);
+    }
+
+    private Flux<AgentEvent> runWithSession(
+            AgentRunRequest request,
+            SessionService.RunSession run,
+            long startedAt) {
+        AgentHistory history = historyBuilder.build(
+                AgentLlmContract.systemPrompt(workspaceTool.name()),
+                run.completedHistory(),
+                run.prompt());
+        return Flux.concat(
+                Flux.just(new AgentEvent.Status("正在发送"),
+                        new AgentEvent.Status("正在分析")),
+                Mono.fromCallable(() -> workspaceRegistry.resolve(run.workspaceId()))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .flatMapMany(workspace -> chatClient.requestInitialDecision(
+                                        request, history.snapshot())
+                                .flatMapMany(decision -> handleDecision(
+                                        request, run, workspace, decision, history, startedAt))));
     }
 
     private Flux<AgentEvent> handleDecision(
             AgentRunRequest request,
+            SessionService.RunSession run,
             AuthorizedWorkspace workspace,
             ToolDecision decision,
             AgentHistory history,
             long startedAt) {
         if (!decision.hasToolCall()) {
-            return directAnswerFlow(decision, history, startedAt);
+            return directAnswerFlow(run, decision, history, startedAt);
         }
-        return toolCallFlow(request, workspace, decision, history, startedAt);
+        return toolCallFlow(request, run, workspace, decision, history, startedAt);
     }
 
     private Flux<AgentEvent> directAnswerFlow(
+            SessionService.RunSession run,
             ToolDecision decision,
             AgentHistory history,
             long startedAt) {
@@ -96,13 +113,14 @@ public class AgentRunService {
             return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
         }
         history.appendFinalAssistant(content);
-        return Flux.just(
-                new AgentEvent.TextDelta(content),
-                completed(startedAt, 1, List.of()));
+        return Flux.concat(
+                Flux.just(new AgentEvent.TextDelta(content)),
+                persistCompleted(run, content, List.of(), startedAt, 1, null, null));
     }
 
     private Flux<AgentEvent> toolCallFlow(
             AgentRunRequest request,
+            SessionService.RunSession run,
             AuthorizedWorkspace workspace,
             ToolDecision decision,
             AgentHistory history,
@@ -121,11 +139,12 @@ public class AgentRunService {
                         call.id(), tool.displayName(), null)),
                 toolRegistry.execute(tool, workspace, call.arguments())
                         .flatMapMany(outcome -> afterToolExecution(
-                                request, call, outcome, history, startedAt)));
+                                request, run, call, outcome, history, startedAt)));
     }
 
     private Flux<AgentEvent> afterToolExecution(
             AgentRunRequest request,
+            SessionService.RunSession run,
             ToolDecision.ToolCall call,
             ToolOutcome outcome,
             AgentHistory history,
@@ -137,12 +156,73 @@ public class AgentRunService {
                         outcome.presentation())),
                 Flux.just(new AgentEvent.Status("正在整理结果")),
                 finalAnswerStreamProcessor.processFinalAnswer(
-                        chatClient.requestFinalAnswer(
-                                request, history.snapshot()),
-                        history,
-                        call,
-                        outcome,
-                        startedAt));
+                                chatClient.requestFinalAnswer(request, history.snapshot()), history)
+                        .concatMap(output -> mapFinalAnswerOutput(
+                                output, run, call, outcome, startedAt)));
+    }
+
+    private Mono<AgentEvent> mapFinalAnswerOutput(
+            AgentFinalAnswerStreamProcessor.Output output,
+            SessionService.RunSession run,
+            ToolDecision.ToolCall call,
+            ToolOutcome outcome,
+            long startedAt) {
+        if (output instanceof AgentFinalAnswerStreamProcessor.Output.Text text) {
+            return Mono.just(new AgentEvent.TextDelta(text.value()));
+        }
+        AgentFinalAnswerStreamProcessor.Output.Finished finished =
+                (AgentFinalAnswerStreamProcessor.Output.Finished) output;
+        List<Session.ToolHistory> persistedTools = List.of(new Session.ToolHistory(
+                call.name() == null ? "" : call.name(),
+                call.arguments() == null ? "" : call.arguments(),
+                outcome.modelContent()));
+        List<AgentEvent.ToolHistory> eventTools = List.of(new AgentEvent.ToolHistory(
+                call.name() == null ? "" : call.name(),
+                call.arguments() == null ? "" : call.arguments(),
+                outcome.modelContent()));
+        return persistCompleted(
+                run,
+                finished.content(),
+                persistedTools,
+                startedAt,
+                2,
+                finished.inputTokens(),
+                finished.outputTokens(),
+                eventTools);
+    }
+
+    private Mono<AgentEvent> persistCompleted(
+            SessionService.RunSession run,
+            String assistantContent,
+            List<Session.ToolHistory> persistedTools,
+            long startedAt,
+            int steps,
+            Integer inputTokens,
+            Integer outputTokens) {
+        return persistCompleted(
+                run, assistantContent, persistedTools, startedAt, steps,
+                inputTokens, outputTokens, List.of());
+    }
+
+    /*
+     * 背景：前端收到 completed 后会把本轮视为可进入下一轮的稳定历史，不能先于 Session 文件落盘。
+     * 设计意图：在 Agent 编排边界等待完整 Turn 原子保存，再创建终态事件；不让流处理器直接宣布成功。
+     * 关键约束：持久化失败必须转成 Error 并保留 incomplete Turn，绝不能继续发送 completed。
+     */
+    private Mono<AgentEvent> persistCompleted(
+            SessionService.RunSession run,
+            String assistantContent,
+            List<Session.ToolHistory> persistedTools,
+            long startedAt,
+            int steps,
+            Integer inputTokens,
+            Integer outputTokens,
+            List<AgentEvent.ToolHistory> eventTools) {
+        return Mono.fromRunnable(() -> sessionService.completeRun(
+                        run, assistantContent, persistedTools))
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(completed(
+                        startedAt, steps, eventTools, inputTokens, outputTokens));
     }
 
     private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
