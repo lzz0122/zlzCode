@@ -74,16 +74,28 @@ public class WorkspaceRegistry {
     }
 
     public AuthorizedWorkspace resolve(String id, String claimedPath) {
-        if (id == null || id.isBlank() || claimedPath == null || claimedPath.isBlank()) {
+        if (claimedPath == null || claimedPath.isBlank()) {
             throw notRegistered();
         }
-        AuthorizedWorkspace workspace = workspaces.get(id);
-        if (workspace == null) throw notRegistered();
+        AuthorizedWorkspace workspace = resolve(id);
         Path claimed = canonicalDirectory(
                 Path.of(claimedPath.trim()),
                 "WORKSPACE_NOT_REGISTERED", "工作区授权已失效，请重新选择目录");
         if (!samePath(workspace.root(), claimed)) throw notRegistered();
         return workspace;
+    }
+
+    public AuthorizedWorkspace resolve(String id) {
+        if (id == null || id.isBlank()) {
+            throw notRegistered();
+        }
+        AuthorizedWorkspace workspace = workspaces.get(id);
+        if (workspace == null) throw notRegistered();
+        Path canonical = canonicalDirectory(
+                workspace.root(),
+                "WORKSPACE_NOT_REGISTERED", "工作区授权已失效，请重新选择目录");
+        if (!samePath(workspace.root(), canonical)) throw notRegistered();
+        return new AuthorizedWorkspace(workspace.id(), workspace.name(), canonical);
     }
 
     /*
