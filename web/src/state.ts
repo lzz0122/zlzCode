@@ -45,6 +45,7 @@ export type AppAction =
   | { type: 'workspace/add'; workspace: Workspace }
   | { type: 'workspace/select'; workspaceId: string }
   | { type: 'session/create'; session: Session }
+  | { type: 'session/hydrate'; session: Session }
   | { type: 'session/select'; sessionId: string }
   | { type: 'message/append'; sessionId: string; message: Message; title?: string }
   | { type: 'run/event'; sessionId: string; messageId: string; event: AgentEvent }
@@ -115,6 +116,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         sessions: [action.session, ...state.sessions],
         activeWorkspaceId: action.session.workspaceId,
         activeSessionId: action.session.id,
+      }
+    case 'session/hydrate':
+      return {
+        ...state,
+        sessions: state.sessions.some(session => session.id === action.session.id)
+          ? state.sessions.map(session => session.id === action.session.id
+              ? action.session
+              : session)
+          : [action.session, ...state.sessions],
       }
     case 'session/select': {
       const session = state.sessions.find(item => item.id === action.sessionId)
@@ -260,7 +270,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
-const STORAGE_KEY = 'zlz-code-agent-web-v2'
+const STORAGE_KEY = 'zlz-code-agent-web-v3'
+const PREVIOUS_STORAGE_KEY = 'zlz-code-agent-web-v2'
 const LEGACY_STORAGE_KEY = 'zlz-code-agent-web-v1'
 const LEGACY_MOCK_WORKSPACE_ID = 'workspace-zlz-code'
 
@@ -289,59 +300,13 @@ function toOpenAIPublicSettings(value: unknown): OpenAIPublicSettings {
   }, requestedModel)
 }
 
-function normalizePersistedMessage(message: Message): Message {
-  const {
-    contextAttached: _legacyContextAttached,
-    ...sanitized
-  } = message as Message & { contextAttached?: unknown }
-  if (sanitized.state === 'running') {
-    return {
-      ...sanitized,
-      state: 'cancelled',
-      statusLabel: '页面已刷新，运行已中断',
-      tools: settleRunningTools(
-        sanitized.tools,
-        'cancelled',
-        '页面已刷新，工具运行已中断',
-      ),
-    }
-  }
-  if (!sanitized.tools?.some(tool => tool.state === 'running')) return sanitized
-  if (sanitized.state === 'cancelled') {
-    const detail = sanitized.statusLabel === '页面已刷新，运行已中断'
-      ? '页面已刷新，工具运行已中断'
-      : '运行已停止'
-    return {
-      ...sanitized,
-      tools: settleRunningTools(sanitized.tools, 'cancelled', detail),
-    }
-  }
-  if (sanitized.state === 'error') {
-    return {
-      ...sanitized,
-      tools: settleRunningTools(sanitized.tools, 'failed', '运行失败，工具未完成'),
-    }
-  }
-  return {
-    ...sanitized,
-    tools: settleRunningTools(
-      sanitized.tools,
-      'failed',
-      '运行已结束，但未收到工具完成事件',
-    ),
-  }
-}
-
-function withoutLegacyMockData(state: AppState): AppState {
+function localState(state: AppState, keepSessionIndex: boolean): AppState {
   const workspaces = state.workspaces.filter(workspace => workspace.id !== LEGACY_MOCK_WORKSPACE_ID)
-  const sessions = state.sessions
-    .filter(session =>
-      session.workspaceId !== LEGACY_MOCK_WORKSPACE_ID && session.messages.length > 0,
-    )
-    .map(session => ({
-      ...session,
-      messages: session.messages.map(normalizePersistedMessage),
-    }))
+  const sessions = keepSessionIndex
+    ? state.sessions
+        .filter(session => session.workspaceId !== LEGACY_MOCK_WORKSPACE_ID)
+        .map(session => ({ ...session, messages: [] }))
+    : []
   const activeSessionExists = sessions.some(session => session.id === state.activeSessionId)
 
   return {
@@ -358,20 +323,25 @@ function withoutLegacyMockData(state: AppState): AppState {
 export function loadState(): AppState {
   try {
     localStorage.removeItem(LEGACY_STORAGE_KEY)
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const current = localStorage.getItem(STORAGE_KEY)
+    const raw = current ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
     if (raw === null) return initialState
     const saved = JSON.parse(raw) as Partial<AppState>
-    return withoutLegacyMockData({
+    const restored = localState({
       ...initialState,
       ...saved,
       openai: toOpenAIPublicSettings(saved.openai),
-    })
+    }, current !== null)
+    localStorage.removeItem(PREVIOUS_STORAGE_KEY)
+    return restored
   } catch {
+    localStorage.removeItem(PREVIOUS_STORAGE_KEY)
     return initialState
   }
 }
 
 export function saveState(state: AppState): void {
   localStorage.removeItem(LEGACY_STORAGE_KEY)
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(withoutLegacyMockData(state)))
+  localStorage.removeItem(PREVIOUS_STORAGE_KEY)
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(localState(state, true)))
 }

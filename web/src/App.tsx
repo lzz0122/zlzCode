@@ -16,7 +16,6 @@ import { Conversation } from './components/Conversation'
 import { Modal } from './components/Modal'
 import { Sidebar } from './components/Sidebar'
 import {
-  completedConversationHistory,
   createId,
   DEFAULT_TOOL_CALLS_PER_RUN,
   MAX_TOOL_CALLS_PER_RUN,
@@ -195,6 +194,8 @@ export default function App() {
     idleModelFetchFeedback,
   )
   const workspacePickerRequest = useRef<Promise<Workspace | undefined> | null>(null)
+  const sessionCreationRequest = useRef<Promise<Session> | null>(null)
+  const hydratedSessions = useRef(new Set<string>())
   const activeRun = useRef<ActiveRunOwner | null>(null)
   const [activeRunOwner, setActiveRunOwner] = useState<ActiveRunOwner | null>(null)
   const modelFetchController = useRef<AbortController | null>(null)
@@ -231,6 +232,29 @@ export default function App() {
     setView('conversation')
   }, [state.activeSessionId])
 
+  useEffect(() => {
+    const sessionId = state.activeSessionId
+    if (
+      sessionId === null
+      || hydratedSessions.current.has(sessionId)
+      || activeRun.current !== null
+    ) return
+    let cancelled = false
+    void gateway.readSession(sessionId)
+      .then(session => {
+        if (cancelled || activeRun.current !== null) return
+        hydratedSessions.current.add(session.id)
+        dispatch({ type: 'session/hydrate', session })
+      })
+      .catch(error => {
+        if (cancelled) return
+        setWorkspaceError(error instanceof Error ? error.message : '无法读取会话')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [state.activeSessionId])
+
   useEffect(() => () => modelFetchController.current?.abort(), [])
   useEffect(() => () => activeRun.current?.controller.abort(), [])
 
@@ -259,15 +283,6 @@ export default function App() {
     return request
   }
 
-  const createSession = (workspace: Workspace): Session => ({
-    id: createId('session'),
-    workspaceId: workspace.id,
-    title: '新会话',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    messages: [],
-  })
-
   const selectWorkspace = (workspaceId: string) => {
     if (activeRun.current !== null) return
     dispatch({ type: 'workspace/select', workspaceId })
@@ -277,6 +292,7 @@ export default function App() {
 
   const selectSession = (sessionId: string) => {
     if (activeRun.current !== null) return
+    hydratedSessions.current.delete(sessionId)
     dispatch({ type: 'session/select', sessionId })
   }
 
@@ -316,10 +332,24 @@ export default function App() {
 
     let session = activeSession
     if (session === undefined || session.workspaceId !== activeWorkspace.id) {
-      session = createSession(activeWorkspace)
-      dispatch({ type: 'session/create', session })
+      if (sessionCreationRequest.current !== null) return
+      setWorkspaceError(null)
+      const creation = gateway.createSession(activeWorkspace.id)
+      sessionCreationRequest.current = creation
+      try {
+        session = await creation
+        if (activeRun.current !== null) return
+        hydratedSessions.current.add(session.id)
+        dispatch({ type: 'session/create', session })
+      } catch (error) {
+        setWorkspaceError(error instanceof Error ? error.message : '无法创建会话')
+        return
+      } finally {
+        if (sessionCreationRequest.current === creation) {
+          sessionCreationRequest.current = null
+        }
+      }
     }
-    const history = completedConversationHistory(session.messages)
 
     const userMessage: Message = {
       id: createId('message'),
@@ -358,9 +388,7 @@ export default function App() {
       for await (const event of gateway.run({
         runId,
         sessionId: session.id,
-        workspace: activeWorkspace,
         prompt,
-        history,
         ...runConfiguration,
       }, controller.signal)) {
         dispatch({ type: 'run/event', sessionId: session.id, messageId: assistantMessage.id, event })
