@@ -2,6 +2,7 @@ package com.zlzcode.codeagent.openai.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
+import com.zlzcode.codeagent.agent.history.AgentHistory;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.protocol.OpenAiChatProtocol;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
@@ -11,6 +12,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -26,24 +28,21 @@ public class OpenAiChatClient {
         this.chatProtocol = chatProtocol;
     }
 
-    public Mono<ToolDecision> requestInitialDecision(AgentRunRequest request) {
+    public Mono<ToolDecision> requestInitialDecision(
+            AgentRunRequest request,
+            List<AgentHistory.Message> messages) {
         return transportClient.postJson(
                         request.openai(), "/chat/completions",
-                        chatProtocol.encodeInitialDecisionRequest(request),
+                        chatProtocol.encodeInitialDecisionRequest(request, messages),
                         Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
                 .map(chatProtocol::decodeInitialDecision)
                 .onErrorMap(OpenAiIntegrationException::fromThrowable);
     }
 
-    public Flux<ChatStreamSignal> requestDirectAnswer(AgentRunRequest request) {
-        return streamSignals(request, chatProtocol.encodeDirectAnswerRequest(request));
-    }
-
     public Flux<ChatStreamSignal> requestFinalAnswer(
             AgentRunRequest request,
-            ToolDecision decision,
-            String toolResult) {
-        return streamSignals(request, chatProtocol.encodeFinalAnswerRequest(request, decision, toolResult));
+            List<AgentHistory.Message> messages) {
+        return streamSignals(request, chatProtocol.encodeFinalAnswerRequest(request, messages));
     }
 
     private Flux<ChatStreamSignal> streamSignals(

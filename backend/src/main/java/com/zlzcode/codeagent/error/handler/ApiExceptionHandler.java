@@ -31,7 +31,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(RequestContractException.class)
     public ResponseEntity<ApiErrorResponse> handleContract(RequestContractException exception) {
         return response(HttpStatus.UNPROCESSABLE_ENTITY,
-                "INVALID_REQUEST", "请求结构无效", false);
+                exception.code(), exception.getMessage(), false);
     }
 
     @ExceptionHandler(DirectoryPickerUnavailableException.class)
