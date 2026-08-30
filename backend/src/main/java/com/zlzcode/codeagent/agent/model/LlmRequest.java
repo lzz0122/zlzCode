@@ -11,7 +11,7 @@ public record LlmRequest(
         String model,
         String reasoningEffort,
         List<LlmMessage> messages,
-        List<AvailableTool> availableTools) {
+        List<ToolDeclaration> availableTools) {
 
     public LlmRequest {
         if (model == null || model.isBlank()) {
@@ -30,9 +30,9 @@ public record LlmRequest(
     /**
      * 当前请求向模型公开的工具描述；工具执行和参数校验仍由 tool 层拥有。
      */
-    public record AvailableTool(String name, String description, Map<String, Object> parametersSchema) {
+    public record ToolDeclaration(String name, String description, Map<String, Object> parametersSchema) {
 
-        public AvailableTool {
+        public ToolDeclaration {
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("LLM tool name cannot be blank");
             }

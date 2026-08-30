@@ -3,40 +3,40 @@ package com.zlzcode.codeagent.agent.model;
 /**
  * 模型流中可由 Agent 消费的 Provider-neutral 事件。
  */
-public sealed interface LlmStreamEvent permits LlmStreamEvent.TextDelta,
-        LlmStreamEvent.HiddenReasoningDelta, LlmStreamEvent.ToolCallDelta,
-        LlmStreamEvent.Usage, LlmStreamEvent.Finish {
+public sealed interface LlmStreamEvent permits LlmStreamEvent.AssistantTextChunk,
+        LlmStreamEvent.InternalReasoningChunk, LlmStreamEvent.ToolCallFragment,
+        LlmStreamEvent.TokenUsage, LlmStreamEvent.GenerationFinished {
 
-    record TextDelta(String value) implements LlmStreamEvent {
+    record AssistantTextChunk(String text) implements LlmStreamEvent {
     }
 
-    record HiddenReasoningDelta(String value) implements LlmStreamEvent {
+    record InternalReasoningChunk(String text) implements LlmStreamEvent {
     }
 
-    record ToolCallDelta(
-            int index,
-            String id,
-            String name,
-            String argumentsDelta) implements LlmStreamEvent {
+    record ToolCallFragment(
+            int toolCallIndex,
+            String callId,
+            String toolName,
+            String argumentsFragment) implements LlmStreamEvent {
 
-        public ToolCallDelta {
-            if (index < 0) {
-                throw new IllegalArgumentException("LLM tool call delta index cannot be negative");
+        public ToolCallFragment {
+            if (toolCallIndex < 0) {
+                throw new IllegalArgumentException("LLM tool call fragment index cannot be negative");
             }
         }
     }
 
-    record Usage(Integer inputTokens, Integer outputTokens) implements LlmStreamEvent {
+    record TokenUsage(Integer inputTokens, Integer outputTokens) implements LlmStreamEvent {
     }
 
-    record Finish(Reason reason) implements LlmStreamEvent {
+    record GenerationFinished(StopReason stopReason) implements LlmStreamEvent {
+    }
 
-        public enum Reason {
-            STOP,
-            TOOL_CALLS,
-            LENGTH,
-            CONTENT_FILTER,
-            OTHER
-        }
+    enum StopReason {
+        STOP,
+        TOOL_CALLS,
+        LENGTH,
+        CONTENT_FILTER,
+        OTHER
     }
 }

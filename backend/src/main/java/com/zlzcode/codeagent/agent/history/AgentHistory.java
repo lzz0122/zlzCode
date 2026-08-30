@@ -43,14 +43,14 @@ public final class AgentHistory {
         if (!outstandingCallIds.isEmpty()) {
             throw new IllegalStateException("Previous tool calls are still outstanding");
         }
-        LlmMessage.AssistantToolCalls message = new LlmMessage.AssistantToolCalls(
+        LlmMessage.AssistantToolCallsMessage message = new LlmMessage.AssistantToolCallsMessage(
                 content, reasoningContent, toolCalls);
         registerToolCalls(message.toolCalls());
         messages.add(message);
     }
 
     public void appendToolResult(String callId, String content) {
-        LlmMessage.ToolResult message = new LlmMessage.ToolResult(callId, content);
+        LlmMessage.ToolResultMessage message = new LlmMessage.ToolResultMessage(callId, content);
         completeToolCall(message.toolCallId());
         messages.add(message);
     }
@@ -62,20 +62,20 @@ public final class AgentHistory {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("Final assistant content cannot be blank");
         }
-        messages.add(new LlmMessage.Text(LlmMessage.Role.ASSISTANT, content));
+        messages.add(new LlmMessage.TextMessage(LlmMessage.MessageRole.ASSISTANT, content));
     }
 
     private void appendInitial(LlmMessage message) {
         Objects.requireNonNull(message, "Agent history message cannot be null");
-        if (message instanceof LlmMessage.AssistantToolCalls assistant) {
+        if (message instanceof LlmMessage.AssistantToolCallsMessage assistant) {
             if (!outstandingCallIds.isEmpty()) {
                 throw new IllegalArgumentException("Initial tool-call groups cannot overlap");
             }
             registerToolCalls(assistant.toolCalls());
-        } else if (message instanceof LlmMessage.ToolResult result) {
+        } else if (message instanceof LlmMessage.ToolResultMessage result) {
             completeToolCall(result.toolCallId());
-        } else if (message instanceof LlmMessage.Text text
-                && text.role() == LlmMessage.Role.ASSISTANT
+        } else if (message instanceof LlmMessage.TextMessage text
+                && text.role() == LlmMessage.MessageRole.ASSISTANT
                 && !outstandingCallIds.isEmpty()) {
             throw new IllegalArgumentException("Initial assistant text precedes outstanding tool results");
         }

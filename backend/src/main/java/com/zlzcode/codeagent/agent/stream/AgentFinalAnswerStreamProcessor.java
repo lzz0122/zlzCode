@@ -29,14 +29,14 @@ public final class AgentFinalAnswerStreamProcessor {
             LlmStreamEvent event,
             FinalAnswerStreamState state,
             SynchronousSink<Output> sink) {
-        if (event instanceof LlmStreamEvent.TextDelta text) {
+        if (event instanceof LlmStreamEvent.AssistantTextChunk text) {
             state.emittedText = true;
-            state.text.append(text.value());
-            sink.next(new Output.Text(text.value()));
-        } else if (event instanceof LlmStreamEvent.Usage usage) {
+            state.text.append(text.text());
+            sink.next(new Output.Text(text.text()));
+        } else if (event instanceof LlmStreamEvent.TokenUsage usage) {
             state.inputTokens = usage.inputTokens();
             state.outputTokens = usage.outputTokens();
-        } else if (event instanceof LlmStreamEvent.ToolCallDelta) {
+        } else if (event instanceof LlmStreamEvent.ToolCallFragment) {
             sink.error(OpenAiIntegrationException.unsupportedToolStream());
         }
     }
