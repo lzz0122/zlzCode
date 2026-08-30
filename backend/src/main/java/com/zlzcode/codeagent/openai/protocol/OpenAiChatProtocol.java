@@ -2,8 +2,8 @@ package com.zlzcode.codeagent.openai.protocol;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
+import com.zlzcode.codeagent.agent.history.AgentHistory;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
@@ -76,30 +76,22 @@ public class OpenAiChatProtocol {
         this(objectMapper, new WorkspaceOverviewToolDefinition(objectMapper));
     }
 
-    public Map<String, Object> encodeInitialDecisionRequest(AgentRunRequest request) {
+    public Map<String, Object> encodeInitialDecisionRequest(
+            AgentRunRequest request,
+            List<AgentHistory.Message> messages) {
         Map<String, Object> body = baseRequest(request);
-        body.put(FIELD_MESSAGES, List.of(
-                systemMessage(),
-                userMessage(request.prompt())));
+        body.put(FIELD_MESSAGES, encodeMessages(messages));
         body.put(FIELD_TOOLS, List.of(toolDefinition()));
         body.put(FIELD_TOOL_CHOICE, TOOL_CHOICE_AUTO);
         body.put(FIELD_STREAM, false);
         return body;
     }
 
-    public Map<String, Object> encodeDirectAnswerRequest(AgentRunRequest request) {
-        Map<String, Object> body = baseRequest(request);
-        body.put(FIELD_MESSAGES, List.of(userMessage(request.prompt())));
-        body.put(FIELD_STREAM, true);
-        return body;
-    }
-
     public Map<String, Object> encodeFinalAnswerRequest(
             AgentRunRequest request,
-            ToolDecision decision,
-            String toolResult) {
+            List<AgentHistory.Message> messages) {
         Map<String, Object> body = baseRequest(request);
-        body.put(FIELD_MESSAGES, finalMessages(request, decision, toolResult));
+        body.put(FIELD_MESSAGES, encodeMessages(messages));
         body.put(FIELD_STREAM, true);
         return body;
     }
@@ -204,15 +196,6 @@ public class OpenAiChatProtocol {
         return body;
     }
 
-    private Map<String, Object> systemMessage() {
-        return Map.of(FIELD_ROLE, ROLE_SYSTEM,
-                FIELD_CONTENT, AgentLlmContract.systemPrompt(workspaceTool.name()));
-    }
-
-    private Map<String, Object> userMessage(String content) {
-        return Map.of(FIELD_ROLE, ROLE_USER, FIELD_CONTENT, content);
-    }
-
     private Map<String, Object> toolDefinition() {
         return Map.of(
                 FIELD_TYPE, FUNCTION_KIND,
@@ -222,30 +205,51 @@ public class OpenAiChatProtocol {
                         FIELD_PARAMETERS, workspaceTool.parametersSchema()));
     }
 
-    private List<Map<String, Object>> finalMessages(
-            AgentRunRequest request,
-            ToolDecision decision,
-            String toolResult) {
-        ToolDecision.ToolCall call = decision.toolCall();
-        Map<String, Object> function = Map.of(
-                FIELD_NAME, call.name(),
-                FIELD_ARGUMENTS, call.arguments() == null ? "" : call.arguments());
-        Map<String, Object> serializedCall = Map.of(
+    private List<Map<String, Object>> encodeMessages(List<AgentHistory.Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            throw new IllegalArgumentException("OpenAI messages cannot be empty");
+        }
+        return messages.stream().map(this::encodeMessage).toList();
+    }
+
+    private Map<String, Object> encodeMessage(AgentHistory.Message message) {
+        if (message instanceof AgentHistory.TextMessage text) {
+            return Map.of(
+                    FIELD_ROLE, switch (text.role()) {
+                        case SYSTEM -> ROLE_SYSTEM;
+                        case USER -> ROLE_USER;
+                        case ASSISTANT -> ROLE_ASSISTANT;
+                    },
+                    FIELD_CONTENT, text.content());
+        }
+        if (message instanceof AgentHistory.ToolResultMessage result) {
+            return Map.of(
+                    FIELD_ROLE, ROLE_TOOL,
+                    FIELD_TOOL_CALL_ID, result.toolCallId(),
+                    FIELD_CONTENT, result.content());
+        }
+        if (message instanceof AgentHistory.AssistantToolCallsMessage assistant) {
+            Map<String, Object> encoded = new LinkedHashMap<>();
+            encoded.put(FIELD_ROLE, ROLE_ASSISTANT);
+            encoded.put(FIELD_CONTENT, assistant.content());
+            encoded.put(FIELD_TOOL_CALLS, assistant.toolCalls().stream()
+                    .map(this::encodeToolCall)
+                    .toList());
+            if (assistant.reasoningContent() != null && !assistant.reasoningContent().isBlank()) {
+                encoded.put(FIELD_REASONING_CONTENT, assistant.reasoningContent());
+            }
+            return encoded;
+        }
+        throw new IllegalArgumentException("Unsupported Agent history message: " + message.getClass().getName());
+    }
+
+    private Map<String, Object> encodeToolCall(ToolDecision.ToolCall call) {
+        return Map.of(
                 FIELD_ID, call.id(),
                 FIELD_TYPE, FUNCTION_KIND,
-                FIELD_FUNCTION, function);
-        Map<String, Object> assistant = new LinkedHashMap<>();
-        assistant.put(FIELD_ROLE, ROLE_ASSISTANT);
-        assistant.put(FIELD_CONTENT, decision.content());
-        assistant.put(FIELD_TOOL_CALLS, List.of(serializedCall));
-        if (decision.reasoningContent() != null && !decision.reasoningContent().isBlank()) {
-            assistant.put(FIELD_REASONING_CONTENT, decision.reasoningContent());
-        }
-        return List.of(
-                systemMessage(),
-                userMessage(request.prompt()),
-                assistant,
-                Map.of(FIELD_ROLE, ROLE_TOOL, FIELD_TOOL_CALL_ID, call.id(), FIELD_CONTENT, toolResult));
+                FIELD_FUNCTION, Map.of(
+                        FIELD_NAME, call.name(),
+                        FIELD_ARGUMENTS, call.arguments() == null ? "" : call.arguments()));
     }
 
     private String textOrNull(JsonNode node) {

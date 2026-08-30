@@ -1,6 +1,7 @@
 package com.zlzcode.codeagent.agent.stream;
 
 import com.zlzcode.codeagent.agent.dto.AgentEvent;
+import com.zlzcode.codeagent.agent.history.AgentHistory;
 import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
@@ -18,13 +19,15 @@ public final class AgentFinalAnswerStreamProcessor {
 
     public Flux<AgentEvent> processFinalAnswer(
             Flux<ChatStreamSignal> signals,
+            AgentHistory history,
             ToolDecision.ToolCall call,
             ToolOutcome outcome,
             long startedAt) {
         FinalAnswerStreamState state = new FinalAnswerStreamState();
         return signals
                 .<AgentEvent>handle((signal, sink) -> mapSignal(signal, state, sink))
-                .concatWith(Mono.defer(() -> finalizeStream(state, call, outcome, startedAt)));
+                .concatWith(Mono.defer(() -> finalizeStream(
+                        state, history, call, outcome, startedAt)));
     }
 
     /*
@@ -38,6 +41,7 @@ public final class AgentFinalAnswerStreamProcessor {
             SynchronousSink<AgentEvent> sink) {
         if (signal instanceof ChatStreamSignal.Text text) {
             state.emittedText = true;
+            state.text.append(text.value());
             sink.next(new AgentEvent.TextDelta(text.value()));
         } else if (signal instanceof ChatStreamSignal.Usage usage) {
             state.inputTokens = usage.inputTokens();
@@ -54,6 +58,7 @@ public final class AgentFinalAnswerStreamProcessor {
      */
     private Mono<AgentEvent> finalizeStream(
             FinalAnswerStreamState state,
+            AgentHistory history,
             ToolDecision.ToolCall call,
             ToolOutcome outcome,
             long startedAt) {
@@ -63,6 +68,7 @@ public final class AgentFinalAnswerStreamProcessor {
         if (!state.emittedText) {
             return Mono.error(OpenAiIntegrationException.finalTextMissing());
         }
+        history.appendFinalAssistant(state.text.toString());
         long durationMs = Math.max(1L,
                 Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
         return Mono.just(new AgentEvent.Completed(
@@ -78,6 +84,7 @@ public final class AgentFinalAnswerStreamProcessor {
 
         private boolean upstreamDone;
         private boolean emittedText;
+        private final StringBuilder text = new StringBuilder();
         private Integer inputTokens;
         private Integer outputTokens;
     }
