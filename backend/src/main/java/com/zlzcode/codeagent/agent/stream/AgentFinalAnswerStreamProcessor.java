@@ -1,33 +1,23 @@
 package com.zlzcode.codeagent.agent.stream;
 
-import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.history.AgentHistory;
-import com.zlzcode.codeagent.agent.model.ToolDecision;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.openai.model.ChatStreamSignal;
-import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SynchronousSink;
 
-import java.time.Duration;
-import java.util.List;
-
 @Component
 public final class AgentFinalAnswerStreamProcessor {
 
-    public Flux<AgentEvent> processFinalAnswer(
+    public Flux<Output> processFinalAnswer(
             Flux<ChatStreamSignal> signals,
-            AgentHistory history,
-            ToolDecision.ToolCall call,
-            ToolOutcome outcome,
-            long startedAt) {
+            AgentHistory history) {
         FinalAnswerStreamState state = new FinalAnswerStreamState();
         return signals
-                .<AgentEvent>handle((signal, sink) -> mapSignal(signal, state, sink))
-                .concatWith(Mono.defer(() -> finalizeStream(
-                        state, history, call, outcome, startedAt)));
+                .<Output>handle((signal, sink) -> mapSignal(signal, state, sink))
+                .concatWith(Mono.defer(() -> finalizeStream(state, history)));
     }
 
     /*
@@ -38,11 +28,11 @@ public final class AgentFinalAnswerStreamProcessor {
     private void mapSignal(
             ChatStreamSignal signal,
             FinalAnswerStreamState state,
-            SynchronousSink<AgentEvent> sink) {
+            SynchronousSink<Output> sink) {
         if (signal instanceof ChatStreamSignal.Text text) {
             state.emittedText = true;
             state.text.append(text.value());
-            sink.next(new AgentEvent.TextDelta(text.value()));
+            sink.next(new Output.Text(text.value()));
         } else if (signal instanceof ChatStreamSignal.Usage usage) {
             state.inputTokens = usage.inputTokens();
             state.outputTokens = usage.outputTokens();
@@ -53,31 +43,30 @@ public final class AgentFinalAnswerStreamProcessor {
 
     /*
      * 背景：模型流结束并不等于最终回答成功，缺少结束标记或正文都可能留下不完整的运行。
-     * 设计意图：在所有上游信号处理完后统一校验并生成 Completed，避免把收口判断散落到流回调中。
-     * 关键约束：必须同时收到 Done 和至少一段文本；否则必须报告协议错误，不能伪造成功完成事件。
+     * 设计意图：在所有上游信号处理完后统一校验并返回最终结果，由运行编排层完成持久化和终态事件。
+     * 关键约束：必须同时收到 Done 和至少一段文本；否则必须报告协议错误，不能向上游提供可完成结果。
      */
-    private Mono<AgentEvent> finalizeStream(
+    private Mono<Output> finalizeStream(
             FinalAnswerStreamState state,
-            AgentHistory history,
-            ToolDecision.ToolCall call,
-            ToolOutcome outcome,
-            long startedAt) {
+            AgentHistory history) {
         if (!state.upstreamDone) {
             return Mono.error(OpenAiIntegrationException.streamBroken());
         }
         if (!state.emittedText) {
             return Mono.error(OpenAiIntegrationException.finalTextMissing());
         }
-        history.appendFinalAssistant(state.text.toString());
-        long durationMs = Math.max(1L,
-                Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
-        return Mono.just(new AgentEvent.Completed(
-                new AgentEvent.RunMetrics(
-                        2, durationMs, state.inputTokens, state.outputTokens),
-                List.of(new AgentEvent.ToolHistory(
-                        call.name() == null ? "" : call.name(),
-                        call.arguments() == null ? "" : call.arguments(),
-                        outcome.modelContent()))));
+        String content = state.text.toString();
+        history.appendFinalAssistant(content);
+        return Mono.just(new Output.Finished(content, state.inputTokens, state.outputTokens));
+    }
+
+    public sealed interface Output permits Output.Text, Output.Finished {
+
+        record Text(String value) implements Output {
+        }
+
+        record Finished(String content, Integer inputTokens, Integer outputTokens) implements Output {
+        }
     }
 
     private static final class FinalAnswerStreamState {

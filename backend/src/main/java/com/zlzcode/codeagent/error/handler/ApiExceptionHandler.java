@@ -6,6 +6,7 @@ import com.zlzcode.codeagent.validation.RequestContractException;
 import com.zlzcode.codeagent.workspace.exception.DirectoryPickerUnavailableException;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
+import com.zlzcode.codeagent.session.exception.SessionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -54,6 +55,18 @@ public class ApiExceptionHandler {
                 ? HttpStatus.BAD_GATEWAY
                 : HttpStatus.valueOf(exception.httpStatus());
         return response(status, exception.code(), exception.safeMessage(), exception.retryable());
+    }
+
+    @ExceptionHandler(SessionException.class)
+    public ResponseEntity<ApiErrorResponse> handleSession(SessionException exception) {
+        HttpStatus status = switch (exception.code()) {
+            case SessionException.NOT_FOUND_CODE -> HttpStatus.NOT_FOUND;
+            case SessionException.RUN_ALREADY_EXISTS_CODE,
+                    SessionException.RUN_NOT_FOUND_CODE -> HttpStatus.CONFLICT;
+            case SessionException.PERSISTENCE_FAILED_CODE -> HttpStatus.SERVICE_UNAVAILABLE;
+            default -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+        return response(status, exception.code(), exception.getMessage(), exception.retryable());
     }
 
     private ResponseEntity<ApiErrorResponse> response(
