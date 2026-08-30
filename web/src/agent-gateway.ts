@@ -1,10 +1,14 @@
 import {
   normalizeOpenAIModels,
   type AgentEvent,
+  type ConversationToolHistory,
+  type Message,
   type OpenAIConnectionInput,
   type OpenAIModel,
   type RunRequest,
+  type Session,
   type Workspace,
+  titleFromPrompt,
 } from './domain'
 import { AgentGatewayError, parseAgentEventStream } from './sse'
 
@@ -14,6 +18,8 @@ export interface AgentGateway {
   readonly label: string
   listModels(connection: OpenAIConnectionInput, signal: AbortSignal): Promise<OpenAIModel[]>
   pickWorkspace(): Promise<Workspace | null>
+  createSession(workspaceId: string): Promise<Session>
+  readSession(sessionId: string): Promise<Session>
   run(request: RunRequest, signal: AbortSignal): AsyncIterable<AgentEvent>
   decideConfirmation(
     runId: string,
@@ -29,6 +35,120 @@ interface WorkspacePickerResponse {
 
 interface ModelListResponse {
   models: unknown
+}
+
+type JsonRecord = Record<string, unknown>
+
+function jsonRecord(value: unknown): JsonRecord | undefined {
+  return typeof value === 'object' && value !== null ? value as JsonRecord : undefined
+}
+
+function requiredString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function timestamp(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function sessionResponseError(): AgentGatewayError {
+  return new AgentGatewayError('读取会话失败：Java 后端返回了无效会话结构', {
+    code: 'SESSION_RESPONSE_INVALID',
+    retryable: false,
+  })
+}
+
+function parseToolHistory(value: unknown): ConversationToolHistory[] {
+  if (!Array.isArray(value)) throw sessionResponseError()
+  return value.map(item => {
+    const candidate = jsonRecord(item)
+    const name = requiredString(candidate?.name)
+    const argumentsValue = typeof candidate?.arguments === 'string' ? candidate.arguments : undefined
+    const result = typeof candidate?.result === 'string' ? candidate.result : undefined
+    if (name === undefined || argumentsValue === undefined || result === undefined) {
+      throw sessionResponseError()
+    }
+    return { name, arguments: argumentsValue, result }
+  })
+}
+
+function parseSession(value: unknown): Session {
+  const candidate = jsonRecord(value)
+  const id = requiredString(candidate?.sessionId)
+  const workspaceId = requiredString(candidate?.workspaceId)
+  const createdAt = timestamp(candidate?.createdAt)
+  const updatedAt = timestamp(candidate?.updatedAt)
+  if (
+    id === undefined
+    || workspaceId === undefined
+    || createdAt === undefined
+    || updatedAt === undefined
+    || !Array.isArray(candidate?.turns)
+  ) throw sessionResponseError()
+
+  const messages = candidate.turns.flatMap(item => {
+    const turn = jsonRecord(item)
+    const runId = requiredString(turn?.runId)
+    const state = turn?.state
+    const turnCreatedAt = timestamp(turn?.createdAt)
+    const user = jsonRecord(turn?.user)
+    const userContent = requiredString(user?.content)
+    if (
+      runId === undefined
+      || (state !== 'completed' && state !== 'incomplete')
+      || turnCreatedAt === undefined
+      || userContent === undefined
+    ) throw sessionResponseError()
+
+    const userMessage: Message = {
+      id: `${runId}-user`,
+      role: 'user',
+      content: userContent,
+      createdAt: turnCreatedAt,
+      state: 'complete',
+    }
+    if (state === 'incomplete') {
+      return [
+        userMessage,
+        {
+          id: `${runId}-assistant`,
+          role: 'assistant' as const,
+          content: '',
+          createdAt: turnCreatedAt,
+          state: 'error' as const,
+          statusLabel: '运行未完成',
+        },
+      ]
+    }
+
+    const assistant = jsonRecord(turn?.assistant)
+    const assistantContent = requiredString(assistant?.content)
+    if (assistantContent === undefined) throw sessionResponseError()
+    const toolHistory = parseToolHistory(assistant?.toolHistory)
+    return [
+      userMessage,
+      {
+        id: `${runId}-assistant`,
+        role: 'assistant' as const,
+        content: assistantContent,
+        createdAt: turnCreatedAt,
+        state: 'complete' as const,
+        statusLabel: toolHistory.length > 0 ? '已回答（执行了工具）' : '已回答（未执行工具）',
+        ...(toolHistory.length > 0 ? { toolHistory } : {}),
+      },
+    ]
+  })
+  const firstUser = messages.find(message => message.role === 'user')
+  return {
+    id,
+    workspaceId,
+    title: firstUser === undefined ? '新会话' : titleFromPrompt(firstUser.content),
+    createdAt,
+    updatedAt,
+    messages,
+  }
 }
 
 async function apiError(response: Response, action: string): Promise<Error> {
@@ -135,6 +255,29 @@ export class HttpAgentGateway implements AgentGateway {
 
     const payload = await response.json() as WorkspacePickerResponse
     return payload.cancelled ? null : payload.workspace
+  }
+
+  async createSession(workspaceId: string): Promise<Session> {
+    const response = await apiFetch(this.endpoint('/api/sessions'), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ workspaceId }),
+    }, '创建会话')
+    if (!response.ok) throw await apiError(response, '创建会话')
+    return parseSession(await response.json())
+  }
+
+  async readSession(sessionId: string): Promise<Session> {
+    const response = await apiFetch(
+      this.endpoint(`/api/sessions/${encodeURIComponent(sessionId)}`),
+      { method: 'GET', headers: { Accept: 'application/json' } },
+      '读取会话',
+    )
+    if (!response.ok) throw await apiError(response, '读取会话')
+    return parseSession(await response.json())
   }
 
   async *run(request: RunRequest, signal: AbortSignal): AsyncIterable<AgentEvent> {

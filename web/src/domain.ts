@@ -1,9 +1,6 @@
 export type ThemePreference = 'light' | 'dark' | 'system'
 
 export const MAX_PROMPT_LENGTH = 20_000
-export const MAX_CONVERSATION_MESSAGES = 40
-export const MAX_CONVERSATION_MESSAGE_CHARS = 100_000
-export const MAX_CONVERSATION_TOTAL_CHARS = 120_000
 export const MIN_TOOL_CALLS_PER_RUN = 1
 export const DEFAULT_TOOL_CALLS_PER_RUN = 5
 export const MAX_TOOL_CALLS_PER_RUN = 15
@@ -51,12 +48,6 @@ export interface Workspace {
   id: string
   name: string
   path: string
-}
-
-export interface ConversationMessageInput {
-  role: 'user' | 'assistant'
-  content: string
-  toolHistory?: ConversationToolHistory[]
 }
 
 export interface ConversationToolHistory {
@@ -151,64 +142,11 @@ export type AgentEvent =
 export interface RunRequest {
   runId: string
   sessionId: string
-  workspace: Workspace
   prompt: string
   model: string
   reasoningEffort?: string
   maxToolCalls: number
   openai: OpenAIConnectionInput
-  history: ConversationMessageInput[]
-}
-
-export function completedConversationHistory(
-  messages: readonly Message[],
-): ConversationMessageInput[] {
-  const completedPairs: Array<readonly [ConversationMessageInput, ConversationMessageInput]> = []
-  for (let index = 0; index + 1 < messages.length; index += 1) {
-    const user = messages[index]
-    const assistant = messages[index + 1]
-    if (user.role !== 'user' || assistant.role !== 'assistant') continue
-    index += 1
-    if (
-      user.state !== 'complete'
-      || assistant.state !== 'complete'
-      || !user.content.trim()
-      || !assistant.content.trim()
-    ) continue
-    const assistantHistory: ConversationMessageInput = {
-      role: 'assistant',
-      content: assistant.content,
-      ...(assistant.toolHistory?.length ? { toolHistory: assistant.toolHistory } : {}),
-    }
-    completedPairs.push([
-      { role: 'user', content: user.content },
-      assistantHistory,
-    ])
-  }
-
-  const history: ConversationMessageInput[] = []
-  let totalChars = 0
-  for (let index = completedPairs.length - 1; index >= 0; index -= 1) {
-    const pair = completedPairs[index]
-    const pairChars = pair[0].content.length
-      + pair[1].content.length
-      + (pair[1].toolHistory ?? []).reduce(
-        (total, exchange) => total
-          + exchange.name.length
-          + exchange.arguments.length
-          + exchange.result.length,
-        0,
-      )
-    if (
-      pair.some(message => message.content.length > MAX_CONVERSATION_MESSAGE_CHARS)
-      || history.length + pair.length > MAX_CONVERSATION_MESSAGES
-      || totalChars + pairChars > MAX_CONVERSATION_TOTAL_CHARS
-    ) break
-
-    history.unshift(...pair)
-    totalChars += pairChars
-  }
-  return history
 }
 
 export function createId(prefix: string): string {
