@@ -1,6 +1,7 @@
 package com.zlzcode.codeagent.agent.history;
 
-import com.zlzcode.codeagent.agent.model.ToolDecision;
+import com.zlzcode.codeagent.agent.model.LlmMessage;
+import com.zlzcode.codeagent.agent.model.LlmToolCall;
 import com.zlzcode.codeagent.session.model.Session;
 import com.zlzcode.codeagent.validation.RequestContractException;
 import org.springframework.stereotype.Component;
@@ -14,7 +15,6 @@ public final class ConversationHistoryBuilder {
     private static final int MAX_MESSAGES = 40;
     private static final int MAX_MESSAGE_CHARS = 100_000;
     private static final int MAX_TOTAL_CHARS = 120_000;
-    private static final String FUNCTION_KIND = "function";
 
     public AgentHistory build(
             String systemPolicy,
@@ -26,13 +26,13 @@ public final class ConversationHistoryBuilder {
         }
 
         List<Session.Turn> history = selectHistory(completedTurns);
-        List<AgentHistory.Message> messages = new ArrayList<>();
-        messages.add(new AgentHistory.TextMessage(AgentHistory.TextRole.SYSTEM, systemPolicy));
+        List<LlmMessage> messages = new ArrayList<>();
+        messages.add(new LlmMessage.Text(LlmMessage.Role.SYSTEM, systemPolicy));
 
         for (int turnIndex = 0; turnIndex < history.size(); turnIndex++) {
             Session.Turn turn = history.get(turnIndex);
-            messages.add(new AgentHistory.TextMessage(
-                    AgentHistory.TextRole.USER, turn.user().content()));
+            messages.add(new LlmMessage.Text(
+                    LlmMessage.Role.USER, turn.user().content()));
             /*
              * 背景：Session 只持久化跨 Run 所需的工具摘要，但模型续聊仍要求合法的
              * assistant tool_calls -> tool -> assistant 消息序列。
@@ -42,17 +42,17 @@ public final class ConversationHistoryBuilder {
             for (int toolIndex = 0; toolIndex < turn.assistant().toolHistory().size(); toolIndex++) {
                 Session.ToolHistory exchange = turn.assistant().toolHistory().get(toolIndex);
                 String callId = "history_" + turnIndex + "_" + toolIndex;
-                ToolDecision.ToolCall call = new ToolDecision.ToolCall(
-                        callId, FUNCTION_KIND, exchange.name(), exchange.arguments());
-                messages.add(new AgentHistory.AssistantToolCallsMessage(
+                LlmToolCall call = new LlmToolCall(
+                        callId, exchange.name(), exchange.arguments());
+                messages.add(new LlmMessage.AssistantToolCalls(
                         null, null, List.of(call)));
-                messages.add(new AgentHistory.ToolResultMessage(callId, exchange.result()));
+                messages.add(new LlmMessage.ToolResult(callId, exchange.result()));
             }
-            messages.add(new AgentHistory.TextMessage(
-                    AgentHistory.TextRole.ASSISTANT, turn.assistant().content()));
+            messages.add(new LlmMessage.Text(
+                    LlmMessage.Role.ASSISTANT, turn.assistant().content()));
         }
 
-        messages.add(new AgentHistory.TextMessage(AgentHistory.TextRole.USER, currentPrompt));
+        messages.add(new LlmMessage.Text(LlmMessage.Role.USER, currentPrompt));
         return new AgentHistory(messages);
     }
 
