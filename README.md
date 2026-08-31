@@ -37,4 +37,11 @@ GET http://127.0.0.1:8000/health
 {"status":"ok"}
 ```
 
+Session files are stored by default in the repository root `sessions/` directory. Set
+`CODEAGENT_SESSION_DIRECTORY` before starting the backend to use another directory.
+
+Authorized workspace state is stored by default in the repository root
+`workspaces/authorized-workspaces.json` file. Set `CODEAGENT_WORKSPACE_STATE_FILE`
+before starting the backend to use another file.
+
 Stage 1 adds the OpenAI-compatible model and single-turn endpoints. The Vite development server proxies API requests to `http://127.0.0.1:8000` by default; set `VITE_AGENT_API_URL` to that address when calling the backend directly.

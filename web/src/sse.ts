@@ -80,6 +80,8 @@ export function isAgentEvent(value: unknown): value is AgentEvent {
   if (!isPlainObject(value) || !isString(value.type)) return false
 
   switch (value.type) {
+    case 'run_started':
+      return isString(value.runId)
     case 'status':
       return isString(value.label)
     case 'tool_confirmation_required':

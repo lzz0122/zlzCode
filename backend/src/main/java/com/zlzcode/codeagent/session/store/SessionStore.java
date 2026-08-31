@@ -233,11 +233,13 @@ public final class SessionStore {
     }
 
     private static Path defaultDirectory() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        Path base = localAppData == null || localAppData.isBlank()
-                ? Path.of(System.getProperty("user.home"), "AppData", "Local")
-                : Path.of(localAppData);
-        return base.resolve("zlz-code-agent").resolve("sessions");
+        Path workingDirectory = Path.of(System.getProperty("user.dir"))
+                .toAbsolutePath().normalize();
+        if (workingDirectory.getFileName() != null
+                && "backend".equalsIgnoreCase(workingDirectory.getFileName().toString())) {
+            return workingDirectory.getParent().resolve("sessions");
+        }
+        return workingDirectory.resolve("sessions");
     }
 
     private record SessionFile(

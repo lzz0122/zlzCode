@@ -215,10 +215,12 @@ public class WorkspaceRegistry {
     }
 
     private static Path defaultStateFile() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        Path base = localAppData == null || localAppData.isBlank()
-                ? Path.of(System.getProperty("user.home"), "AppData", "Local")
-                : Path.of(localAppData);
-        return base.resolve("zlz-code-agent").resolve("authorized-workspaces.json");
+        Path workingDirectory = Path.of(System.getProperty("user.dir"))
+                .toAbsolutePath().normalize();
+        Path projectRoot = "backend".equalsIgnoreCase(String.valueOf(workingDirectory.getFileName()))
+                && workingDirectory.getParent() != null
+                ? workingDirectory.getParent()
+                : workingDirectory;
+        return projectRoot.resolve("workspaces").resolve("authorized-workspaces.json");
     }
 }
