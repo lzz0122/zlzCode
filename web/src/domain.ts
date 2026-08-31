@@ -111,6 +111,7 @@ export interface Session {
 }
 
 export type AgentEvent =
+  | { type: 'run_started'; runId: string }
   | { type: 'status'; label: string }
   | {
       type: 'tool_confirmation_required'
@@ -140,7 +141,6 @@ export type AgentEvent =
   | { type: 'error'; message: string; code?: string; retryable?: boolean }
 
 export interface RunRequest {
-  runId: string
   sessionId: string
   prompt: string
   model: string
@@ -189,6 +189,8 @@ function completedStatusLabel(tools: readonly ToolStep[] | undefined): string {
 
 export function applyAgentEvent(message: Message, event: AgentEvent): Message {
   switch (event.type) {
+    case 'run_started':
+      return message
     case 'status':
       return { ...message, statusLabel: event.label }
     case 'tool_confirmation_required':
