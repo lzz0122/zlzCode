@@ -13,3 +13,5 @@ server:
 codeagent:
   session:
     directory: ${CODEAGENT_SESSION_DIRECTORY:../sessions}
+  workspace:
+    state-file: ${CODEAGENT_WORKSPACE_STATE_FILE:../workspaces/authorized-workspaces.json}
