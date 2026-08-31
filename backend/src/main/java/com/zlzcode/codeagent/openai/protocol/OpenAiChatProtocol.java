@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.codeagent.agent.model.LlmMessage;
 import com.zlzcode.codeagent.agent.model.LlmRequest;
-import com.zlzcode.codeagent.agent.model.LlmResponse;
 import com.zlzcode.codeagent.agent.model.LlmStreamEvent;
 import com.zlzcode.codeagent.agent.model.LlmToolCall;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
@@ -44,7 +43,6 @@ public class OpenAiChatProtocol {
     private static final String FIELD_DESCRIPTION = "description";
     private static final String FIELD_PARAMETERS = "parameters";
     private static final String FIELD_TOOL_CALL_ID = "tool_call_id";
-    private static final String FIELD_MESSAGE = "message";
     private static final String FIELD_USAGE = "usage";
     private static final String FIELD_PROMPT_TOKENS = "prompt_tokens";
     private static final String FIELD_COMPLETION_TOKENS = "completion_tokens";
@@ -67,7 +65,7 @@ public class OpenAiChatProtocol {
         this.objectMapper = objectMapper;
     }
 
-    public Map<String, Object> encodeInitialResponseRequest(LlmRequest request) {
+    public Map<String, Object> encodeChatRequest(LlmRequest request) {
         Map<String, Object> body = baseRequest(request);
         body.put(FIELD_MESSAGES, encodeMessages(request.messages()));
         if (!request.availableTools().isEmpty()) {
@@ -76,44 +74,8 @@ public class OpenAiChatProtocol {
                     .toList());
             body.put(FIELD_TOOL_CHOICE, TOOL_CHOICE_AUTO);
         }
-        body.put(FIELD_STREAM, false);
-        return body;
-    }
-
-    public Map<String, Object> encodeFinalAnswerRequest(LlmRequest request) {
-        Map<String, Object> body = baseRequest(request);
-        body.put(FIELD_MESSAGES, encodeMessages(request.messages()));
         body.put(FIELD_STREAM, true);
         return body;
-    }
-
-    public LlmResponse decodeResponse(JsonNode payload) {
-        JsonNode message = singleMessage(payload);
-        String content = textOrNull(message.get(FIELD_CONTENT));
-        String hiddenReasoning = textOrNull(message.get(FIELD_REASONING_CONTENT));
-        JsonNode calls = message.get(FIELD_TOOL_CALLS);
-        if (calls == null || calls.isNull() || (calls.isArray() && calls.isEmpty())) {
-            return new LlmResponse(content, hiddenReasoning, List.of());
-        }
-        if (!calls.isArray() || calls.size() != 1) {
-            throw OpenAiIntegrationException.invalidToolResponse();
-        }
-
-        JsonNode call = calls.get(0);
-        JsonNode function = call == null ? null : call.get(FIELD_FUNCTION);
-        if (call == null || !call.isObject() || function == null || !function.isObject()) {
-            throw OpenAiIntegrationException.invalidToolResponse();
-        }
-
-        String id = textOrNull(call.get(FIELD_ID));
-        String type = textOrNull(call.get(FIELD_TYPE));
-        String name = textOrNull(function.get(FIELD_NAME));
-        String arguments = textOrNull(function.get(FIELD_ARGUMENTS));
-        if (id == null || id.isBlank() || !FUNCTION_KIND.equals(type) || name == null || name.isBlank()) {
-            throw OpenAiIntegrationException.invalidToolResponse();
-        }
-        return new LlmResponse(
-                content, hiddenReasoning, List.of(new LlmToolCall(id, name, arguments)));
     }
 
     public DecodedStreamFrame decodeStreamFrame(ServerSentEvent<String> event) {
@@ -195,17 +157,6 @@ public class OpenAiChatProtocol {
             }
         }
         return new DecodedStreamFrame(events, false);
-    }
-
-    private JsonNode singleMessage(JsonNode payload) {
-        if (payload == null || !payload.isObject()) throw OpenAiIntegrationException.invalidToolResponse();
-        JsonNode choices = payload.get(FIELD_CHOICES);
-        if (choices == null || !choices.isArray() || choices.size() != 1) {
-            throw OpenAiIntegrationException.invalidToolResponse();
-        }
-        JsonNode message = choices.get(0).get(FIELD_MESSAGE);
-        if (message == null || !message.isObject()) throw OpenAiIntegrationException.invalidToolResponse();
-        return message;
     }
 
     private Map<String, Object> baseRequest(LlmRequest request) {
