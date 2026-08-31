@@ -45,6 +45,9 @@ htmlcov/
 tmp/
 temp/
 
+# Local runtime state
+/sessions/
+
 # Operating system files
 .DS_Store
 Thumbs.db
