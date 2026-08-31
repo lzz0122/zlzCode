@@ -47,6 +47,7 @@ temp/
 
 # Local runtime state
 /sessions/
+/workspaces/
 
 # Operating system files
 .DS_Store
