@@ -37,4 +37,7 @@ GET http://127.0.0.1:8000/health
 {"status":"ok"}
 ```
 
+Session files are stored by default in the repository root `sessions/` directory. Set
+`CODEAGENT_SESSION_DIRECTORY` before starting the backend to use another directory.
+
 Stage 1 adds the OpenAI-compatible model and single-turn endpoints. The Vite development server proxies API requests to `http://127.0.0.1:8000` by default; set `VITE_AGENT_API_URL` to that address when calling the backend directly.

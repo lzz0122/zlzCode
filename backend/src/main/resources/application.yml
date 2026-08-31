@@ -12,4 +12,4 @@ server:
 
 codeagent:
   session:
-    directory: ${CODEAGENT_SESSION_DIRECTORY:}
+    directory: ${CODEAGENT_SESSION_DIRECTORY:../sessions}
