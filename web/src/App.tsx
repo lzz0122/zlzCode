@@ -51,7 +51,7 @@ type ModelFetchFeedback =
 
 interface ActiveRunOwner {
   controller: AbortController
-  runId: string
+  runId: string | null
   sessionId: string
   messageId: string
 }
@@ -374,10 +374,9 @@ export default function App() {
     setView('conversation')
 
     const controller = new AbortController()
-    const runId = createId('run')
     const owner: ActiveRunOwner = {
       controller,
-      runId,
+      runId: null,
       sessionId: session.id,
       messageId: assistantMessage.id,
     }
@@ -386,11 +385,16 @@ export default function App() {
 
     try {
       for await (const event of gateway.run({
-        runId,
         sessionId: session.id,
         prompt,
         ...runConfiguration,
       }, controller.signal)) {
+        if (event.type === 'run_started') {
+          const startedOwner: ActiveRunOwner = { ...owner, runId: event.runId }
+          activeRun.current = startedOwner
+          setActiveRunOwner(startedOwner)
+          continue
+        }
         dispatch({ type: 'run/event', sessionId: session.id, messageId: assistantMessage.id, event })
       }
     } catch (error) {
@@ -420,7 +424,7 @@ export default function App() {
     decision: 'approve' | 'reject',
   ) => {
     const owner = activeRun.current
-    if (owner === null) return
+    if (owner === null || owner.runId === null) return
     dispatch({
       type: 'run/confirmation-state',
       sessionId: owner.sessionId,
