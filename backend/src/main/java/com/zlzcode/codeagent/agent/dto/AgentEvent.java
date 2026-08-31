@@ -5,7 +5,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 public sealed interface AgentEvent permits AgentEvent.Status, AgentEvent.TextDelta,
-        AgentEvent.ToolStarted, AgentEvent.ToolFinished, AgentEvent.Completed, AgentEvent.Error {
+        AgentEvent.ToolStarted, AgentEvent.ToolFinished, AgentEvent.Completed, AgentEvent.Error,
+        AgentEvent.RunStarted {
 
     @JsonProperty("type")
     String type();
@@ -14,6 +15,13 @@ public sealed interface AgentEvent permits AgentEvent.Status, AgentEvent.TextDel
         @Override
         public String type() {
             return "status";
+        }
+    }
+
+    record RunStarted(String runId) implements AgentEvent {
+        @Override
+        public String type() {
+            return "run_started";
         }
     }
 

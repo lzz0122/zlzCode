@@ -27,6 +27,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class AgentRunService {
@@ -59,6 +60,7 @@ public class AgentRunService {
         this.workspaceTool = workspaceTool;
     }
 
+    //TODO
     public Flux<AgentEvent> run(AgentRunRequest request) {
         /*
          * 背景：Agent 通过 SSE 向前端持续发送事件，内部异常若直接逃逸会中断 HTTP 响应并暴露实现细节。
@@ -67,10 +69,13 @@ public class AgentRunService {
          */
         return Flux.defer(() -> {
             long startedAt = System.nanoTime();
+            String runId = "run-" + UUID.randomUUID();
             return Mono.fromCallable(() -> sessionService.beginRun(
-                            request.sessionId(), request.runId(), request.prompt()))
+                            request.sessionId(), runId, request.prompt()))
                     .subscribeOn(Schedulers.boundedElastic())
-                    .flatMapMany(run -> runWithSession(request, run, startedAt));
+                    .flatMapMany(run -> Flux.concat(
+                            Flux.just(new AgentEvent.RunStarted(run.runId())),
+                            runWithSession(request, run, startedAt)));
         }).onErrorResume(exceptionMapper::mapException);
     }
 
