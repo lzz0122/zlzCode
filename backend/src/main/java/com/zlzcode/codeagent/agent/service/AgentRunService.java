@@ -4,7 +4,7 @@ import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.dto.AgentRunRequest;
 import com.zlzcode.codeagent.agent.error.AgentRunExceptionMapper;
 import com.zlzcode.codeagent.agent.contract.AgentLlmContract;
-import com.zlzcode.codeagent.agent.history.AgentHistory;
+import com.zlzcode.codeagent.agent.context.AgentRunContext;
 import com.zlzcode.codeagent.agent.history.ConversationHistoryBuilder;
 import com.zlzcode.codeagent.agent.model.LlmMessage;
 import com.zlzcode.codeagent.agent.model.LlmRequest;
@@ -13,10 +13,8 @@ import com.zlzcode.codeagent.agent.model.LlmTurnResult;
 import com.zlzcode.codeagent.agent.stream.LlmTurnStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
-import com.zlzcode.codeagent.session.model.Session;
 import com.zlzcode.codeagent.session.service.SessionService;
 import com.zlzcode.codeagent.tool.definition.ToolDefinition;
-import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
@@ -83,84 +81,71 @@ public class AgentRunService {
             AgentRunRequest request,
             SessionService.RunSession run,
             long startedAt) {
-        AgentHistory history = historyBuilder.build(
-                AgentLlmContract.systemPrompt(workspaceTool.name()),
-                run.completedHistory(),
-                run.prompt());
         return Flux.concat(
                 Flux.just(new AgentEvent.Status("正在发送"),
                         new AgentEvent.Status("正在分析")),
                 Mono.fromCallable(() -> workspaceRegistry.resolve(run.workspaceId()))
                         .subscribeOn(Schedulers.boundedElastic())
                         .flatMapMany(workspace -> {
+                            List<LlmMessage> initialMessages = historyBuilder.build(
+                                    AgentLlmContract.systemPrompt(workspaceTool.name()),
+                                    run.completedHistory(),
+                                    run.prompt());
+                            AgentRunContext context = new AgentRunContext(
+                                    new AgentRunContext.RunConfiguration(
+                                            request.model(),
+                                            request.reasoningEffort(),
+                                            request.maxToolCalls(),
+                                            request.openai()),
+                                    run,
+                                    workspace,
+                                    initialMessages,
+                                    startedAt);
                             LlmRequest initialRequest = llmRequest(
-                                    request,
-                                    history.snapshot(),
+                                    context,
+                                    context.messages(),
                                     List.of(new LlmRequest.ToolDeclaration(
                                             workspaceTool.name(),
                                             workspaceTool.description(),
                                             workspaceTool.parametersSchema())));
                             return turnStreamProcessor.collect(
                                             chatClient.chat(request.openai(), initialRequest))
-                                    .flatMapMany(response -> handleResponse(
-                                            request, run, workspace, response, history, startedAt, 0,
-                                            List.of(), List.of()));
+                                    .flatMapMany(response -> handleResponse(context, response));
                         })
         );
     }
 
     private Flux<AgentEvent> handleResponse(
-            AgentRunRequest request,
-            SessionService.RunSession run,
-            AuthorizedWorkspace workspace,
-            LlmTurnResult response,
-            AgentHistory history,
-            long startedAt,
-            int toolCallsUsed,
-            List<Session.ToolHistory> persistedTools,
-            List<AgentEvent.ToolHistory> eventTools) {
+            AgentRunContext context,
+            LlmTurnResult response) {
+        context.recordModelTurn(response);
         if (!response.hasToolCalls()) {
-            return directAnswerFlow(run, response, history, startedAt, toolCallsUsed + 1,
-                    persistedTools, eventTools);
+            return directAnswerFlow(context, response);
         }
-        return toolCallFlow(request, run, workspace, response, history, startedAt, toolCallsUsed,
-                persistedTools, eventTools);
+        return toolCallFlow(context, response);
     }
 
     private Flux<AgentEvent> directAnswerFlow(
-            SessionService.RunSession run,
-            LlmTurnResult response,
-            AgentHistory history,
-            long startedAt,
-            int steps,
-            List<Session.ToolHistory> persistedTools,
-            List<AgentEvent.ToolHistory> eventTools) {
+            AgentRunContext context,
+            LlmTurnResult response) {
         String content = response.content();
         if (content == null || content.isBlank()) {
             return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
         }
-        history.appendFinalAssistant(content);
+        context.appendFinalAssistant(content);
         return Flux.concat(
                 Flux.just(new AgentEvent.TextDelta(content)),
-                persistCompleted(run, content, persistedTools, startedAt, steps,
-                        response.inputTokens(), response.outputTokens(), eventTools));
+                persistCompleted(context, content));
     }
 
     private Flux<AgentEvent> toolCallFlow(
-            AgentRunRequest request,
-            SessionService.RunSession run,
-            AuthorizedWorkspace workspace,
-            LlmTurnResult response,
-            AgentHistory history,
-            long startedAt,
-            int toolCallsUsed,
-            List<Session.ToolHistory> persistedTools,
-            List<AgentEvent.ToolHistory> eventTools) {
-        if (response.toolCalls().size() != 1) {
+            AgentRunContext context,
+            LlmTurnResult response) {
+        if (response.toolCalls().size() != 1 || !context.canExecuteTool()) {
             return Flux.error(OpenAiIntegrationException.invalidToolCall());
         }
         LlmToolCall call = response.toolCalls().getFirst();
-        history.appendAssistantToolCalls(
+        context.appendAssistantToolCalls(
                 response.content(), response.hiddenReasoning(), List.of(call));
         ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
         /*
@@ -171,62 +156,30 @@ public class AgentRunService {
         return Flux.concat(
                 Flux.just(new AgentEvent.ToolStarted(
                         call.id(), tool.displayName(), null)),
-                toolRegistry.execute(tool, workspace, call.arguments())
-                        .flatMapMany(outcome -> afterToolExecution(
-                                request, run, workspace, call, outcome, history, startedAt,
-                                toolCallsUsed + 1, persistedTools, eventTools)));
+                toolRegistry.execute(tool, context.workspace(), call.arguments())
+                        .flatMapMany(outcome -> afterToolExecution(context, call, outcome)));
     }
 
     private Flux<AgentEvent> afterToolExecution(
-            AgentRunRequest request,
-            SessionService.RunSession run,
-            AuthorizedWorkspace workspace,
+            AgentRunContext context,
             LlmToolCall call,
-            ToolOutcome outcome,
-            AgentHistory history,
-            long startedAt,
-            int toolCallsUsed,
-            List<Session.ToolHistory> persistedTools,
-            List<AgentEvent.ToolHistory> eventTools) {
-        history.appendToolResult(call.id(), outcome.modelContent());
-        Session.ToolHistory persistedTool = new Session.ToolHistory(
-                call.name(), call.arguments() == null ? "" : call.arguments(), outcome.modelContent());
-        AgentEvent.ToolHistory eventTool = new AgentEvent.ToolHistory(
-                call.name(), call.arguments() == null ? "" : call.arguments(), outcome.modelContent());
-        List<Session.ToolHistory> nextPersistedTools = new java.util.ArrayList<>(persistedTools);
-        nextPersistedTools.add(persistedTool);
-        List<AgentEvent.ToolHistory> nextEventTools = new java.util.ArrayList<>(eventTools);
-        nextEventTools.add(eventTool);
+            ToolOutcome outcome) {
+        context.recordToolExecution(call, outcome);
         return Flux.concat(
                 Flux.just(new AgentEvent.ToolFinished(
                         call.id(), outcome.ok() ? "completed" : "failed",
                         outcome.presentation())),
                 Flux.just(new AgentEvent.Status("正在整理结果")),
                 turnStreamProcessor.collect(chatClient.chat(
-                                request.openai(),
-                                llmRequest(request, history.snapshot(),
-                                        toolCallsUsed < request.maxToolCalls()
+                                context.configuration().openai(),
+                                llmRequest(context, context.messages(),
+                                        context.canExecuteTool()
                                                 ? List.of(new LlmRequest.ToolDeclaration(
                                                 workspaceTool.name(),
                                                 workspaceTool.description(),
                                                 workspaceTool.parametersSchema()))
                                                 : List.of())))
-                                .flatMapMany(response -> handleResponse(
-                                request, run, workspace, response, history, startedAt, toolCallsUsed,
-                                nextPersistedTools, nextEventTools)));
-    }
-
-    private Mono<AgentEvent> persistCompleted(
-            SessionService.RunSession run,
-            String assistantContent,
-            List<Session.ToolHistory> persistedTools,
-            long startedAt,
-            int steps,
-            Integer inputTokens,
-            Integer outputTokens) {
-        return persistCompleted(
-                run, assistantContent, persistedTools, startedAt, steps,
-                inputTokens, outputTokens, List.of());
+                                .flatMapMany(response -> handleResponse(context, response)));
     }
 
     /*
@@ -235,42 +188,38 @@ public class AgentRunService {
      * 关键约束：持久化失败必须转成 Error 并保留 incomplete Turn，绝不能继续发送 completed。
      */
     private Mono<AgentEvent> persistCompleted(
-            SessionService.RunSession run,
-            String assistantContent,
-            List<Session.ToolHistory> persistedTools,
-            long startedAt,
-            int steps,
-            Integer inputTokens,
-            Integer outputTokens,
-            List<AgentEvent.ToolHistory> eventTools) {
+            AgentRunContext context,
+            String assistantContent) {
         return Mono.fromRunnable(() -> sessionService.completeRun(
-                        run, assistantContent, persistedTools))
+                        context.sessionRun(), assistantContent, context.sessionToolHistory()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(completed(
-                        startedAt, steps, eventTools, inputTokens, outputTokens));
+                        context));
     }
 
-    private AgentEvent.Completed completed(long startedAt, int steps, List<AgentEvent.ToolHistory> history) {
-        return completed(startedAt, steps, history, null, null);
-    }
-
-    private AgentEvent.Completed completed(
-            long startedAt,
-            int steps,
-            List<AgentEvent.ToolHistory> history,
-            Integer inputTokens,
-            Integer outputTokens) {
-        long durationMs = Math.max(1L, Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
+    private AgentEvent.Completed completed(AgentRunContext context) {
+        long durationMs = Math.max(1L, Duration.ofNanos(
+                System.nanoTime() - context.startedAtNanos()).toMillis());
+        List<AgentEvent.ToolHistory> eventTools = context.toolExecutions().stream()
+                .map(record -> new AgentEvent.ToolHistory(
+                        record.name(), record.arguments(), record.modelResult()))
+                .toList();
         return new AgentEvent.Completed(
-                new AgentEvent.RunMetrics(steps, durationMs, inputTokens, outputTokens), history);
+                new AgentEvent.RunMetrics(
+                        context.modelSteps(), durationMs,
+                        context.inputTokens(), context.outputTokens()),
+                eventTools);
     }
 
     private LlmRequest llmRequest(
-            AgentRunRequest request,
+            AgentRunContext context,
             List<LlmMessage> messages,
             List<LlmRequest.ToolDeclaration> availableTools) {
         return new LlmRequest(
-                request.model(), request.reasoningEffort(), messages, availableTools);
+                context.configuration().model(),
+                context.configuration().reasoningEffort(),
+                messages,
+                availableTools);
     }
 
 }
