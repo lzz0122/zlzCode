@@ -14,9 +14,7 @@ import com.zlzcode.codeagent.agent.stream.LlmTurnStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.session.service.SessionService;
-import com.zlzcode.codeagent.tool.definition.ToolDefinition;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
-import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -38,7 +36,6 @@ public class AgentRunService {
     private final LlmTurnStreamProcessor turnStreamProcessor;
     private final ConversationHistoryBuilder conversationHistoryBuilder;
     private final SessionService sessionService;
-    private final ToolDefinition workspaceToolDefinition;
 
     public AgentRunService(
             OpenAiChatClient openAiChatClient,
@@ -47,8 +44,7 @@ public class AgentRunService {
             AgentRunExceptionMapper agentRunExceptionMapper,
             LlmTurnStreamProcessor turnStreamProcessor,
             ConversationHistoryBuilder conversationHistoryBuilder,
-            SessionService sessionService,
-            ToolDefinition workspaceToolDefinition) {
+            SessionService sessionService) {
         this.openAiChatClient = openAiChatClient;
         this.workspaceRegistry = workspaceRegistry;
         this.toolRegistry = toolRegistry;
@@ -56,7 +52,6 @@ public class AgentRunService {
         this.turnStreamProcessor = turnStreamProcessor;
         this.conversationHistoryBuilder = conversationHistoryBuilder;
         this.sessionService = sessionService;
-        this.workspaceToolDefinition = workspaceToolDefinition;
     }
 
     //TODO
@@ -89,7 +84,7 @@ public class AgentRunService {
                         .subscribeOn(Schedulers.boundedElastic())
                         .flatMapMany(workspace -> {
                             List<LlmMessage> initialMessages = conversationHistoryBuilder.build(
-                                    AgentLlmContract.systemPrompt(workspaceToolDefinition.name()),
+                                    AgentLlmContract.systemPrompt(toolRegistry.promptToolName()),
                                     sessionRun.completedHistory(),
                                     sessionRun.prompt());
                             AgentRunContext context = new AgentRunContext(
@@ -136,10 +131,7 @@ public class AgentRunService {
 
     private Mono<LlmTurnResult> collectModelTurn(AgentRunContext context) {
         List<LlmRequest.ToolDeclaration> tools = context.canExecuteTool()
-                ? List.of(new LlmRequest.ToolDeclaration(
-                workspaceToolDefinition.name(),
-                workspaceToolDefinition.description(),
-                workspaceToolDefinition.parametersSchema()))
+                ? toolRegistry.modelToolDeclarations()
                 : List.of();
         return turnStreamProcessor.collect(openAiChatClient.chat(
                 context.configuration().openai(),
@@ -165,13 +157,11 @@ public class AgentRunService {
         LlmToolCall call = execute.call();
         context.appendAssistantToolCalls(
                 result.content(), result.hiddenReasoning(), List.of(call));
-        ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
         return Mono.just(state.withPendingTool(
                 RunPhase.TOOL_READY,
                 call,
-                tool,
                 List.of(new AgentEvent.ToolStarted(
-                        call.id(), tool.displayName(), null))));
+                        call.id(), toolRegistry.displayName(call.name()), null))));
     }
 
     private ModelTurnOutcome classifyModelTurn(AgentRunContext context, LlmTurnResult result) {
@@ -189,7 +179,7 @@ public class AgentRunService {
 
     private Publisher<? extends RunLoopState> executeToolCall(RunLoopState state) {
         return toolRegistry.execute(
-                        state.registeredTool(), state.context().workspace(), state.toolCall().arguments())
+                        state.toolCall().name(), state.context().workspace(), state.toolCall().arguments())
                 .map(outcome -> {
                     state.context().recordToolExecution(state.toolCall(), outcome);
                     return state.withToolOutcomeEvents(
@@ -271,7 +261,6 @@ public class AgentRunService {
             RunPhase phase,
             LlmTurnResult modelTurnResult,
             LlmToolCall toolCall,
-            ToolRegistry.RegisteredTool registeredTool,
             List<AgentEvent> pendingEvents) {
 
         private RunLoopState {
@@ -284,34 +273,32 @@ public class AgentRunService {
                     RunPhase.INITIAL,
                     null,
                     null,
-                    null,
                     List.of());
         }
 
         private RunLoopState transitionTo(RunPhase nextPhase) {
-            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, registeredTool, List.of());
+            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, List.of());
         }
 
         private RunLoopState withModelResult(RunPhase nextPhase, LlmTurnResult nextResult) {
-            return new RunLoopState(context, nextPhase, nextResult, null, null, List.of());
+            return new RunLoopState(context, nextPhase, nextResult, null, List.of());
         }
 
         private RunLoopState withEvents(RunPhase nextPhase, List<AgentEvent> nextEvents) {
-            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, registeredTool, nextEvents);
+            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, nextEvents);
         }
 
         private RunLoopState withPendingTool(
                 RunPhase nextPhase,
                 LlmToolCall nextCall,
-                ToolRegistry.RegisteredTool nextTool,
                 List<AgentEvent> nextEvents) {
             return new RunLoopState(
-                    context, nextPhase, modelTurnResult, nextCall, nextTool, nextEvents);
+                    context, nextPhase, modelTurnResult, nextCall, nextEvents);
         }
 
         private RunLoopState withToolOutcomeEvents(RunPhase nextPhase, List<AgentEvent> nextEvents) {
             return new RunLoopState(
-                    context, nextPhase, modelTurnResult, toolCall, registeredTool, nextEvents);
+                    context, nextPhase, modelTurnResult, toolCall, nextEvents);
         }
     }
 

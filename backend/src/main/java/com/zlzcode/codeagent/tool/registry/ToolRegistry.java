@@ -1,6 +1,7 @@
 package com.zlzcode.codeagent.tool.registry;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zlzcode.codeagent.agent.model.LlmRequest;
 import com.zlzcode.codeagent.tool.definition.ToolDefinition;
 import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
 import com.zlzcode.codeagent.tool.handler.ToolHandler;
@@ -10,6 +11,7 @@ import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 
 @Component
@@ -28,6 +30,45 @@ public final class ToolRegistry {
 
     public RegisteredTool find(String name) {
         return tools.getOrDefault(name, RegisteredTool.unavailable());
+    }
+
+    /*
+     * 背景：每轮 LLM 请求都需要工具名称、描述和参数 Schema，但这些信息本来由工具定义拥有。
+     * 设计意图：由 Registry 从已注册定义生成模型声明，让 Agent 只获取工具快照，不重复组装元数据。
+     * 关键约束：只能暴露 available 的注册工具，执行校验仍必须经过 Registry，不能把不可用工具或裸 Schema 直接交给模型。
+     */
+    public List<LlmRequest.ToolDeclaration> modelToolDeclarations() {
+        return tools.values().stream()
+                .filter(RegisteredTool::available)
+                .map(tool -> new LlmRequest.ToolDeclaration(
+                        tool.definition().name(),
+                        tool.definition().description(),
+                        tool.definition().parametersSchema()))
+                .toList();
+    }
+
+    /*
+     * 背景：Agent 系统提示词需要引用当前可用工具名称，名称和提示词内容不能在多个层重复维护。
+     * 设计意图：由 Registry 提供提示词所需的已注册工具名称，Agent 只负责把它交给 LLM 合同。
+     * 关键约束：当前提示词合同只支持一个工作区工具；若改变工具选择规则，必须同步修改 AgentLlmContract，不能静默取任意名称。
+     */
+    public String promptToolName() {
+        return tools.values().stream()
+                .filter(RegisteredTool::available)
+                .map(tool -> tool.definition().name())
+                .findFirst()
+                .orElse("");
+    }
+
+    public String displayName(String name) {
+        return find(name).displayName();
+    }
+
+    public Mono<ToolOutcome> execute(
+            String name,
+            AuthorizedWorkspace workspace,
+            String arguments) {
+        return execute(find(name), workspace, arguments);
     }
 
     /*
