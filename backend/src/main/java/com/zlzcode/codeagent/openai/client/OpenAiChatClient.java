@@ -1,14 +1,12 @@
 package com.zlzcode.codeagent.openai.client;
 
 import com.zlzcode.codeagent.agent.model.LlmRequest;
-import com.zlzcode.codeagent.agent.model.LlmResponse;
 import com.zlzcode.codeagent.agent.model.LlmStreamEvent;
 import com.zlzcode.codeagent.openai.dto.OpenAiConnectionInput;
 import com.zlzcode.codeagent.openai.protocol.OpenAiChatProtocol;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,18 +24,7 @@ public class OpenAiChatClient {
         this.chatProtocol = chatProtocol;
     }
 
-    public Mono<LlmResponse> requestInitialResponse(
-            OpenAiConnectionInput connection,
-            LlmRequest request) {
-        return transportClient.postJson(
-                        connection, "/chat/completions",
-                        chatProtocol.encodeInitialResponseRequest(request),
-                        Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
-                .map(chatProtocol::decodeResponse)
-                .onErrorMap(OpenAiIntegrationException::fromThrowable);
-    }
-
-    public Flux<LlmStreamEvent> requestFinalAnswer(
+    public Flux<LlmStreamEvent> chat(
             OpenAiConnectionInput connection,
             LlmRequest request) {
         AtomicBoolean receivedDone = new AtomicBoolean();
@@ -48,7 +35,7 @@ public class OpenAiChatClient {
          */
         return transportClient.postEventStream(
                         connection, "/chat/completions",
-                        chatProtocol.encodeFinalAnswerRequest(request),
+                        chatProtocol.encodeChatRequest(request),
                         Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
                 .map(chatProtocol::decodeStreamFrame)
                 .takeUntil(frame -> {
