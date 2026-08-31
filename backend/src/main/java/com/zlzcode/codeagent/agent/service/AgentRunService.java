@@ -26,6 +26,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import org.reactivestreams.Publisher;
 
 @Service
 public class AgentRunService {
@@ -101,85 +102,105 @@ public class AgentRunService {
                                     workspace,
                                     initialMessages,
                                     startedAt);
-                            LlmRequest initialRequest = llmRequest(
-                                    context,
-                                    context.messages(),
-                                    List.of(new LlmRequest.ToolDeclaration(
-                                            workspaceTool.name(),
-                                            workspaceTool.description(),
-                                            workspaceTool.parametersSchema())));
-                            return turnStreamProcessor.collect(
-                                            chatClient.chat(request.openai(), initialRequest))
-                                    .flatMapMany(response -> handleResponse(context, response));
+                            return reactLoop(context);
                         })
         );
     }
 
-    private Flux<AgentEvent> handleResponse(
-            AgentRunContext context,
-            LlmTurnResult response) {
-        context.recordModelTurn(response);
-        if (!response.hasToolCalls()) {
-            return directAnswerFlow(context, response);
-        }
-        return toolCallFlow(context, response);
+    /*
+     * 背景：ReAct Run 需要在每轮模型结果、工具观察结果和最终回答之间循环推进，
+     * 递归拼接事件流会让结束条件和下一轮入口分散在多个方法中。
+     * 设计意图：用单一状态推进器表达 Reason -> Act -> Observe -> Reason，
+     * 每个状态只产生一次异步转移，事件由状态统一投影。
+     * 关键约束：状态必须按顺序推进，ToolStarted 先于工具执行，Completed 只能来自终态。
+     */
+    private Flux<AgentEvent> reactLoop(AgentRunContext context) {
+        return Flux.just(ReActState.initial(context))
+                .expandDeep(this::advance)
+                .concatMapIterable(ReActState::events);
     }
 
-    private Flux<AgentEvent> directAnswerFlow(
-            AgentRunContext context,
-            LlmTurnResult response) {
-        String content = response.content();
-        if (content == null || content.isBlank()) {
-            return Flux.error(OpenAiIntegrationException.noDisplayableResponse());
-        }
-        context.appendFinalAssistant(content);
-        return Flux.concat(
-                Flux.just(new AgentEvent.TextDelta(content)),
-                persistCompleted(context, content));
+    private Publisher<? extends ReActState> advance(ReActState state) {
+        return switch (state.phase()) {
+            case START -> Mono.just(state.next(Phase.REQUEST));
+            case REQUEST -> requestModel(state.context())
+                    .map(result -> state.withResult(Phase.DECIDE, result));
+            case DECIDE -> decideState(state);
+            case TOOL_STARTED -> executeToolState(state);
+            case TOOL_FINISHED -> Mono.just(state.next(Phase.REQUEST));
+            case ANSWER_TEXT -> Mono.just(state.next(Phase.PERSIST));
+            case PERSIST -> persistState(state);
+            case TERMINAL -> Mono.empty();
+        };
     }
 
-    private Flux<AgentEvent> toolCallFlow(
-            AgentRunContext context,
-            LlmTurnResult response) {
-        if (response.toolCalls().size() != 1 || !context.canExecuteTool()) {
-            return Flux.error(OpenAiIntegrationException.invalidToolCall());
+    private Mono<LlmTurnResult> requestModel(AgentRunContext context) {
+        List<LlmRequest.ToolDeclaration> tools = context.canExecuteTool()
+                ? List.of(new LlmRequest.ToolDeclaration(
+                workspaceTool.name(),
+                workspaceTool.description(),
+                workspaceTool.parametersSchema()))
+                : List.of();
+        return turnStreamProcessor.collect(chatClient.chat(
+                context.configuration().openai(),
+                llmRequest(context, context.messages(), tools)));
+    }
+
+    private Publisher<? extends ReActState> decideState(ReActState state) {
+        AgentRunContext context = state.context();
+        LlmTurnResult result = state.result();
+        context.recordModelTurn(result);
+        TurnDecision decision = decide(context, result);
+        if (decision instanceof TurnDecision.Fail fail) {
+            return Mono.error(fail.error());
         }
-        LlmToolCall call = response.toolCalls().getFirst();
+        if (decision instanceof TurnDecision.FinishAnswer answer) {
+            context.appendFinalAssistant(answer.content());
+            return Mono.just(state.withEvents(
+                    Phase.ANSWER_TEXT,
+                    List.of(new AgentEvent.TextDelta(answer.content()))));
+        }
+
+        TurnDecision.ExecuteTool execute = (TurnDecision.ExecuteTool) decision;
+        LlmToolCall call = execute.call();
         context.appendAssistantToolCalls(
-                response.content(), response.hiddenReasoning(), List.of(call));
+                result.content(), result.hiddenReasoning(), List.of(call));
         ToolRegistry.RegisteredTool tool = toolRegistry.find(call.name());
-        /*
-         * 背景：前端根据工具事件的先后顺序创建轨迹卡片、结束执行状态并展示最终回答。
-         * 设计意图：由运行流程统一推进工具阶段，而不是让工具执行方法直接生成 Agent 事件流。
-         * 关键约束：必须先发送 ToolStarted，再执行工具；ToolFinished 必须先于最终文本。
-         */
-        return Flux.concat(
-                Flux.just(new AgentEvent.ToolStarted(
-                        call.id(), tool.displayName(), null)),
-                toolRegistry.execute(tool, context.workspace(), call.arguments())
-                        .flatMapMany(outcome -> afterToolExecution(context, call, outcome)));
+        return Mono.just(state.withTool(
+                Phase.TOOL_STARTED,
+                call,
+                tool,
+                List.of(new AgentEvent.ToolStarted(
+                        call.id(), tool.displayName(), null))));
     }
 
-    private Flux<AgentEvent> afterToolExecution(
-            AgentRunContext context,
-            LlmToolCall call,
-            ToolOutcome outcome) {
-        context.recordToolExecution(call, outcome);
-        return Flux.concat(
-                Flux.just(new AgentEvent.ToolFinished(
-                        call.id(), outcome.ok() ? "completed" : "failed",
-                        outcome.presentation())),
-                Flux.just(new AgentEvent.Status("正在整理结果")),
-                turnStreamProcessor.collect(chatClient.chat(
-                                context.configuration().openai(),
-                                llmRequest(context, context.messages(),
-                                        context.canExecuteTool()
-                                                ? List.of(new LlmRequest.ToolDeclaration(
-                                                workspaceTool.name(),
-                                                workspaceTool.description(),
-                                                workspaceTool.parametersSchema()))
-                                                : List.of())))
-                                .flatMapMany(response -> handleResponse(context, response)));
+    private TurnDecision decide(AgentRunContext context, LlmTurnResult result) {
+        if (result.hasToolCalls()) {
+            if (result.toolCalls().size() != 1 || !context.canExecuteTool()) {
+                return new TurnDecision.Fail(OpenAiIntegrationException.invalidToolCall());
+            }
+            return new TurnDecision.ExecuteTool(result.toolCalls().getFirst());
+        }
+        if (result.content() == null || result.content().isBlank()) {
+            return new TurnDecision.Fail(OpenAiIntegrationException.noDisplayableResponse());
+        }
+        return new TurnDecision.FinishAnswer(result.content());
+    }
+
+    private Publisher<? extends ReActState> executeToolState(ReActState state) {
+        return toolRegistry.execute(
+                        state.tool(), state.context().workspace(), state.call().arguments())
+                .map(outcome -> {
+                    state.context().recordToolExecution(state.call(), outcome);
+                    return state.withToolResultEvents(
+                            Phase.TOOL_FINISHED,
+                            List.of(
+                                    new AgentEvent.ToolFinished(
+                                            state.call().id(),
+                                            outcome.ok() ? "completed" : "failed",
+                                            outcome.presentation()),
+                                    new AgentEvent.Status("正在整理结果")));
+                });
     }
 
     /*
@@ -187,14 +208,12 @@ public class AgentRunService {
      * 设计意图：在 Agent 编排边界等待完整 Turn 原子保存，再创建终态事件；不让流处理器直接宣布成功。
      * 关键约束：持久化失败必须转成 Error 并保留 incomplete Turn，绝不能继续发送 completed。
      */
-    private Mono<AgentEvent> persistCompleted(
-            AgentRunContext context,
-            String assistantContent) {
+    private Publisher<? extends ReActState> persistState(ReActState state) {
+        AgentRunContext context = state.context();
         return Mono.fromRunnable(() -> sessionService.completeRun(
-                        context.sessionRun(), assistantContent, context.sessionToolHistory()))
+                        context.sessionRun(), state.result().content(), context.sessionToolHistory()))
                 .subscribeOn(Schedulers.boundedElastic())
-                .thenReturn(completed(
-                        context));
+                .thenReturn(state.withEvents(Phase.TERMINAL, List.of(completed(context))));
     }
 
     private AgentEvent.Completed completed(AgentRunContext context) {
@@ -220,6 +239,79 @@ public class AgentRunService {
                 context.configuration().reasoningEffort(),
                 messages,
                 availableTools);
+    }
+
+    private enum Phase {
+        START,
+        REQUEST,
+        DECIDE,
+        TOOL_STARTED,
+        TOOL_FINISHED,
+        ANSWER_TEXT,
+        PERSIST,
+        TERMINAL
+    }
+
+    private sealed interface TurnDecision
+            permits TurnDecision.ExecuteTool, TurnDecision.FinishAnswer, TurnDecision.Fail {
+
+        record ExecuteTool(LlmToolCall call) implements TurnDecision {
+        }
+
+        record FinishAnswer(String content) implements TurnDecision {
+        }
+
+        record Fail(RuntimeException error) implements TurnDecision {
+        }
+    }
+
+    private record ReActState(
+            AgentRunContext context,
+            Phase phase,
+            LlmTurnResult result,
+            LlmToolCall call,
+            ToolRegistry.RegisteredTool tool,
+            List<AgentEvent> events) {
+
+        private ReActState {
+            events = List.copyOf(events);
+        }
+
+        private static ReActState initial(AgentRunContext context) {
+            return new ReActState(
+                    context,
+                    Phase.START,
+                    null,
+                    null,
+                    null,
+                    List.of());
+        }
+
+        private ReActState next(Phase nextPhase) {
+            return new ReActState(context, nextPhase, result, call, tool, List.of());
+        }
+
+        private ReActState withResult(Phase nextPhase, LlmTurnResult nextResult) {
+            return new ReActState(context, nextPhase, nextResult, null, null, List.of());
+        }
+
+        private ReActState withEvents(Phase nextPhase, List<AgentEvent> nextEvents) {
+            return new ReActState(context, nextPhase, result, call, tool, nextEvents);
+        }
+
+        private ReActState withTool(
+                Phase nextPhase,
+                LlmToolCall nextCall,
+                ToolRegistry.RegisteredTool nextTool,
+                List<AgentEvent> nextEvents) {
+            return new ReActState(
+                    context, nextPhase, result, nextCall, nextTool, nextEvents);
+        }
+
+        private ReActState withToolResultEvents(Phase nextPhase, List<AgentEvent> nextEvents) {
+            return new ReActState(
+                    context, nextPhase, result, call, tool, nextEvents);
+        }
     }
 
 }
