@@ -7,12 +7,9 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 public record AgentRunRequest(
-        @JsonProperty("runId")
-        @NotBlank @Size(max = 128) @Pattern(regexp = "^[A-Za-z0-9_-]+$") String runId,
         @JsonProperty("sessionId")
         @NotBlank @Size(max = 128) String sessionId,
         @NotBlank @Size(max = 20_000) String prompt,
