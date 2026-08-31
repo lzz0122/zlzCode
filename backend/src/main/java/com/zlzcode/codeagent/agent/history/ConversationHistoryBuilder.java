@@ -16,7 +16,7 @@ public final class ConversationHistoryBuilder {
     private static final int MAX_MESSAGE_CHARS = 100_000;
     private static final int MAX_TOTAL_CHARS = 120_000;
 
-    public AgentHistory build(
+    public List<LlmMessage> build(
             String systemPolicy,
             List<Session.Turn> completedTurns,
             String currentPrompt) {
@@ -53,7 +53,7 @@ public final class ConversationHistoryBuilder {
         }
 
         messages.add(new LlmMessage.TextMessage(LlmMessage.MessageRole.USER, currentPrompt));
-        return new AgentHistory(messages);
+        return messages;
     }
 
     private List<Session.Turn> selectHistory(List<Session.Turn> turns) {
