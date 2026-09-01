@@ -10,6 +10,11 @@ import com.zlzcode.codeagent.agent.model.LlmMessage;
 import com.zlzcode.codeagent.agent.model.LlmRequest;
 import com.zlzcode.codeagent.agent.model.LlmToolCall;
 import com.zlzcode.codeagent.agent.model.LlmTurnResult;
+import com.zlzcode.codeagent.agent.model.AgentRunSnapshot;
+import com.zlzcode.codeagent.agent.model.RunRecord;
+import com.zlzcode.codeagent.agent.model.RunStatus;
+import com.zlzcode.codeagent.agent.dto.RunResponse;
+import com.zlzcode.codeagent.agent.store.RunStore;
 import com.zlzcode.codeagent.agent.stream.LlmTurnStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
@@ -17,13 +22,28 @@ import com.zlzcode.codeagent.session.service.SessionService;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.core.publisher.Sinks;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import org.reactivestreams.Publisher;
 
 @Service
@@ -36,6 +56,20 @@ public class AgentRunService {
     private final LlmTurnStreamProcessor turnStreamProcessor;
     private final ConversationHistoryBuilder conversationHistoryBuilder;
     private final SessionService sessionService;
+    private final RunStore runStore;
+
+    @Value("${codeagent.run.max-concurrency:4}")
+    private int maxConcurrency;
+
+    @Value("${codeagent.run.queue-capacity:100}")
+    private int queueCapacity;
+
+    @Value("${codeagent.run.timeout:PT5M}")
+    private Duration runTimeout;
+
+    private final Map<String, ManagedRun> activeRuns = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<Void>> sessionTails = new ConcurrentHashMap<>();
+    private ExecutorService runExecutor;
 
     public AgentRunService(
             OpenAiChatClient openAiChatClient,
@@ -44,7 +78,8 @@ public class AgentRunService {
             AgentRunExceptionMapper agentRunExceptionMapper,
             LlmTurnStreamProcessor turnStreamProcessor,
             ConversationHistoryBuilder conversationHistoryBuilder,
-            SessionService sessionService) {
+            SessionService sessionService,
+            RunStore runStore) {
         this.openAiChatClient = openAiChatClient;
         this.workspaceRegistry = workspaceRegistry;
         this.toolRegistry = toolRegistry;
@@ -52,54 +87,162 @@ public class AgentRunService {
         this.turnStreamProcessor = turnStreamProcessor;
         this.conversationHistoryBuilder = conversationHistoryBuilder;
         this.sessionService = sessionService;
+        this.runStore = runStore;
     }
 
-    //TODO
-    public Flux<AgentEvent> run(AgentRunRequest request) {
-        /*
-         * 背景：Agent 通过 SSE 向前端持续发送事件，内部异常若直接逃逸会中断 HTTP 响应并暴露实现细节。
-         * 设计意图：在服务边界把已知异常映射为稳定的公开错误事件，而不是把堆栈交给 Web 层处理。
-         * 关键约束：错误事件必须终止本次运行，且消息中不得包含密钥、本机路径或内部异常堆栈。
-         */
-        return Flux.defer(() -> {
-            long startedAt = System.nanoTime();
-            String runId = "run-" + UUID.randomUUID();
-            return Mono.fromCallable(() -> sessionService.beginRun(
-                            request.sessionId(), runId, request.prompt()))
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .flatMapMany(sessionRun -> Flux.concat(
-                            Flux.just(new AgentEvent.RunStarted(sessionRun.runId())),
-                            initializeRunExecution(request, sessionRun, startedAt)));
-        }).onErrorResume(agentRunExceptionMapper::mapException);
+    @PostConstruct
+    void startExecutor() {
+        runExecutor = new ThreadPoolExecutor(
+                maxConcurrency,
+                maxConcurrency,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queueCapacity),
+                Executors.defaultThreadFactory(),
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
-    private Flux<AgentEvent> initializeRunExecution(
+    @PreDestroy
+    void stopExecutor() {
+        if (runExecutor != null) runExecutor.shutdownNow();
+    }
+
+    public synchronized RunResponse submit(AgentRunRequest request) {
+        String key = request.idempotencyKey().trim();
+        String fingerprint = fingerprint(request);
+        Optional<RunRecord> existing = runStore.findByIdempotency(request.sessionId(), key);
+        if (existing.isPresent()) {
+            if (!existing.get().requestFingerprint().equals(fingerprint)) {
+                throw com.zlzcode.codeagent.agent.exception.RunException.idempotencyConflict();
+            }
+            return RunResponse.from(existing.get());
+        }
+
+        String runId = "run-" + UUID.randomUUID();
+        SessionService.RunSession sessionRun = sessionService.beginRun(
+                request.sessionId(), runId, request.prompt());
+        RunRecord record = runStore.create(new AgentRunSnapshot(
+                runId, request.sessionId(), key, fingerprint, java.time.Instant.now()));
+        ManagedRun managed = new ManagedRun(runId);
+        activeRuns.put(runId, managed);
+        enqueue(request, sessionRun, managed);
+        return RunResponse.from(record);
+    }
+
+    public Flux<AgentEvent> events(String sessionId, String runId) {
+        RunRecord record = runStore.read(sessionId, runId);
+        ManagedRun active = activeRuns.get(runId);
+        if (active != null && record.status() == RunStatus.RUNNING) return active.sink.asFlux();
+        if (record.status() == RunStatus.SUCCEEDED) {
+            return Flux.just(
+                    new AgentEvent.TextDelta(record.finalAnswer()),
+                    new AgentEvent.Completed(record.metrics(), record.toolHistory().stream()
+                            .map(tool -> new AgentEvent.ToolHistory(
+                                    tool.name(), tool.arguments(), tool.result()))
+                            .toList()));
+        }
+        if (record.status() == RunStatus.FAILED) {
+            return Flux.just(new AgentEvent.Error(
+                    record.errorMessage(), record.errorCode(), Boolean.TRUE.equals(record.errorRetryable())));
+        }
+        return Flux.empty();
+    }
+
+    public RunResponse read(String sessionId, String runId) {
+        return RunResponse.from(runStore.read(sessionId, runId));
+    }
+
+    private void enqueue(
             AgentRunRequest request,
             SessionService.RunSession sessionRun,
-            long startedAt) {
+            ManagedRun managed) {
+        CompletableFuture<Void> previous = sessionTails.getOrDefault(
+                request.sessionId(), CompletableFuture.completedFuture(null));
+            CompletableFuture<Void> current;
+        try {
+            current = previous.handle((ignored, error) -> null)
+                    .thenComposeAsync(ignored -> execute(request, sessionRun, managed).toFuture(), runExecutor);
+        } catch (RuntimeException exception) {
+            fail(managed, exception);
+            return;
+        }
+        sessionTails.put(request.sessionId(), current);
+        current.whenComplete((ignored, error) -> sessionTails.remove(request.sessionId(), current));
+    }
+
+    private Mono<Void> execute(
+            AgentRunRequest request,
+            SessionService.RunSession sessionRun,
+            ManagedRun managed) {
+        return Mono.defer(() -> {
+                    SessionService.RunSession effectiveSessionRun = sessionService.refreshRun(sessionRun);
+                    managed.sink.tryEmitNext(new AgentEvent.RunStarted(effectiveSessionRun.runId()));
+                    long startedAt = System.nanoTime();
+                    return Mono.fromCallable(() -> workspaceRegistry.resolve(effectiveSessionRun.workspaceId()))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .flatMapMany(workspace -> {
+                                List<LlmMessage> initialMessages = conversationHistoryBuilder.build(
+                                        AgentLlmContract.systemPrompt(toolRegistry.promptToolName()),
+                                        effectiveSessionRun.completedHistory(), effectiveSessionRun.prompt());
+                                AgentRunContext context = new AgentRunContext(
+                                        new AgentRunContext.RunConfiguration(
+                                                request.model(), request.reasoningEffort(), request.maxToolCalls(), request.openai()),
+                                        effectiveSessionRun, workspace, initialMessages, startedAt);
+                                return initializeRunExecution(context);
+                            })
+                            .timeout(runTimeout)
+                            .doOnNext(event -> managed.sink.tryEmitNext(event))
+                            .then();
+                })
+                .doOnError(error -> fail(managed, error))
+                .onErrorResume(error -> Mono.empty())
+                .doOnSuccess(ignored -> finish(managed));
+    }
+
+    private Flux<AgentEvent> initializeRunExecution(AgentRunContext context) {
         return Flux.concat(
-                Flux.just(new AgentEvent.Status("正在发送"),
-                        new AgentEvent.Status("正在分析")),
-                Mono.fromCallable(() -> workspaceRegistry.resolve(sessionRun.workspaceId()))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .flatMapMany(workspace -> {
-                            List<LlmMessage> initialMessages = conversationHistoryBuilder.build(
-                                    AgentLlmContract.systemPrompt(toolRegistry.promptToolName()),
-                                    sessionRun.completedHistory(),
-                                    sessionRun.prompt());
-                            AgentRunContext context = new AgentRunContext(
-                                    new AgentRunContext.RunConfiguration(
-                                            request.model(),
-                                            request.reasoningEffort(),
-                                            request.maxToolCalls(),
-                                            request.openai()),
-                                    sessionRun,
-                                    workspace,
-                                    initialMessages,
-                                    startedAt);
-                            return processRunToCompletion(context);
-                        })
-        );
+                Flux.just(new AgentEvent.Status("正在发送"), new AgentEvent.Status("正在分析")),
+                processRunToCompletion(context));
+    }
+
+    private void finish(ManagedRun managed) {
+        managed.sink.tryEmitComplete();
+        activeRuns.remove(managed.runId);
+    }
+
+    private void fail(ManagedRun managed, Throwable error) {
+        AgentEvent.Error event = agentRunExceptionMapper.mapException(error)
+                .onErrorReturn(new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false))
+                .block(Duration.ofSeconds(1));
+        if (event == null) event = new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false);
+        try {
+            runStore.fail(managed.runId, event.code(), event.message(), event.retryable());
+        } catch (RuntimeException ignored) {
+        }
+        managed.sink.tryEmitNext(event);
+        finish(managed);
+    }
+
+    private String fingerprint(AgentRunRequest request) {
+        String value = String.join("\u0000", request.sessionId(), request.prompt(), request.model(),
+                request.reasoningEffort() == null ? "" : request.reasoningEffort(),
+                String.valueOf(request.maxToolCalls()), request.openai().baseUrl(), request.openai().apiKey());
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 不可用", exception);
+        }
+    }
+
+    private static final class ManagedRun {
+        private final String runId;
+        private final Sinks.Many<AgentEvent> sink = Sinks.many().multicast().onBackpressureBuffer();
+
+        private ManagedRun(String runId) {
+            this.runId = runId;
+        }
     }
 
     /*
@@ -200,10 +343,14 @@ public class AgentRunService {
      */
     private Publisher<? extends RunLoopState> persistRunCompletion(RunLoopState state) {
         AgentRunContext context = state.context();
+        AgentEvent.Completed completed = buildCompletedEvent(context);
         return Mono.fromRunnable(() -> sessionService.completeRun(
                         context.sessionRun(), state.modelTurnResult().content(), context.sessionToolHistory()))
+                .doOnSuccess(ignored -> runStore.succeed(
+                        context.sessionRun().runId(), state.modelTurnResult().content(),
+                        context.sessionToolHistory(), completed.metrics()))
                 .subscribeOn(Schedulers.boundedElastic())
-                .thenReturn(state.withEvents(RunPhase.COMPLETED, List.of(buildCompletedEvent(context))));
+                .thenReturn(state.withEvents(RunPhase.COMPLETED, List.of(completed)));
     }
 
     private AgentEvent.Completed buildCompletedEvent(AgentRunContext context) {

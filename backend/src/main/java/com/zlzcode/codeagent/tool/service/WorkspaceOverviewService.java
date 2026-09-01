@@ -7,6 +7,7 @@ import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.workspace.security.WorkspacePathGuard;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -25,14 +26,18 @@ public class WorkspaceOverviewService implements ToolHandler {
 
     private static final int MAX_ENTRIES = 200;
     private static final int MAX_RESULT_CHARS = 20_000;
-    private static final Duration EXECUTION_TIMEOUT = Duration.ofSeconds(2);
+    private final Duration executionTimeout;
 
     private final ObjectMapper objectMapper;
     private final WorkspacePathGuard pathGuard;
 
-    public WorkspaceOverviewService(ObjectMapper objectMapper, WorkspacePathGuard pathGuard) {
+    public WorkspaceOverviewService(
+            ObjectMapper objectMapper,
+            WorkspacePathGuard pathGuard,
+            @Value("${codeagent.run.tool-timeout:PT10S}") Duration executionTimeout) {
         this.objectMapper = objectMapper;
         this.pathGuard = pathGuard;
+        this.executionTimeout = executionTimeout;
     }
 
     /*
@@ -44,7 +49,7 @@ public class WorkspaceOverviewService implements ToolHandler {
     public Mono<ToolOutcome> execute(AuthorizedWorkspace workspace, String arguments) {
         return Mono.fromCallable(() -> scan(workspace.root()))
                 .subscribeOn(Schedulers.boundedElastic())
-                .timeout(EXECUTION_TIMEOUT)
+                .timeout(executionTimeout)
                 .onErrorReturn(ToolOutcome.failure(
                         objectMapper,
                         "TOOL_TIMEOUT",

@@ -7,6 +7,7 @@ import com.zlzcode.codeagent.workspace.exception.DirectoryPickerUnavailableExcep
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.session.exception.SessionException;
+import com.zlzcode.codeagent.agent.exception.RunException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -64,6 +65,16 @@ public class ApiExceptionHandler {
             case SessionException.RUN_ALREADY_EXISTS_CODE,
                     SessionException.RUN_NOT_FOUND_CODE -> HttpStatus.CONFLICT;
             case SessionException.PERSISTENCE_FAILED_CODE -> HttpStatus.SERVICE_UNAVAILABLE;
+            default -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+        return response(status, exception.code(), exception.getMessage(), exception.retryable());
+    }
+
+    @ExceptionHandler(RunException.class)
+    public ResponseEntity<ApiErrorResponse> handleRun(RunException exception) {
+        HttpStatus status = switch (exception.code()) {
+            case RunException.NOT_FOUND_CODE -> HttpStatus.NOT_FOUND;
+            case RunException.IDEMPOTENCY_CONFLICT_CODE -> HttpStatus.CONFLICT;
             default -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
         return response(status, exception.code(), exception.getMessage(), exception.retryable());

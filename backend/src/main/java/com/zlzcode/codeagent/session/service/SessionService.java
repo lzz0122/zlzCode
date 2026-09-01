@@ -44,6 +44,15 @@ public final class SessionService {
         return sessionStore.read(sessionId);
     }
 
+    public RunSession refreshRun(RunSession run) {
+        Session current = sessionStore.read(run.sessionId());
+        return new RunSession(
+                run.sessionId(), run.runId(), run.workspaceId(), run.prompt(),
+                current.turns().stream()
+                        .filter(turn -> turn.state() == Session.TurnState.COMPLETED)
+                        .toList());
+    }
+
     /*
      * 背景：用户提交的 Prompt 必须在模型调用前可靠保存，但失败 Run 不能污染后续模型历史。
      * 设计意图：先写入只有 user 的 incomplete Turn，成功后再原子补齐 Assistant；不提前伪造完成消息对。

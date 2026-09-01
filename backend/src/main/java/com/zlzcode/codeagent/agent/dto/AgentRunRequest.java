@@ -12,6 +12,8 @@ import jakarta.validation.constraints.Size;
 public record AgentRunRequest(
         @JsonProperty("sessionId")
         @NotBlank @Size(max = 128) String sessionId,
+        @JsonProperty("idempotencyKey")
+        @NotBlank @Size(max = 128) String idempotencyKey,
         @NotBlank @Size(max = 20_000) String prompt,
         @NotBlank @Size(max = 256) String model,
         @JsonProperty("reasoningEffort") @Size(max = 64) String reasoningEffort,
