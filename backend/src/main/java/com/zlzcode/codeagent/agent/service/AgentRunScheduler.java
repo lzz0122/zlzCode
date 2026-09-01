@@ -20,15 +20,23 @@ import java.util.function.Supplier;
 @Component
 final class AgentRunScheduler {
 
-    @Value("${codeagent.run.max-concurrency:4}")
     private int maxConcurrency;
 
-    @Value("${codeagent.run.queue-capacity:100}")
     private int queueCapacity;
 
     private final Map<String, CompletableFuture<Void>> sessionExecutionTails =
             new ConcurrentHashMap<>();
     private ExecutorService runExecutor;
+
+    AgentRunScheduler(
+            @Value("${codeagent.run.max-concurrency:4}") int maxConcurrency,
+            @Value("${codeagent.run.queue-capacity:100}") int queueCapacity) {
+        if (maxConcurrency < 1 || queueCapacity < 1) {
+            throw new IllegalArgumentException("Run scheduler limits must be positive");
+        }
+        this.maxConcurrency = maxConcurrency;
+        this.queueCapacity = queueCapacity;
+    }
 
     @PostConstruct
     void start() {
