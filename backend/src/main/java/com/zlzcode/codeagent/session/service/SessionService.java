@@ -2,6 +2,7 @@ package com.zlzcode.codeagent.session.service;
 
 import com.zlzcode.codeagent.session.exception.SessionException;
 import com.zlzcode.codeagent.session.model.Session;
+import com.zlzcode.codeagent.session.model.SessionRunSnapshot;
 import com.zlzcode.codeagent.session.store.SessionStore;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,10 +45,10 @@ public final class SessionService {
         return sessionStore.read(sessionId);
     }
 
-    public RunSession refreshRun(RunSession run) {
-        Session current = sessionStore.read(run.sessionId());
-        return new RunSession(
-                run.sessionId(), run.runId(), run.workspaceId(), run.prompt(),
+    public SessionRunSnapshot refreshRun(String sessionId, String runId, String prompt) {
+        Session current = sessionStore.read(sessionId);
+        return new SessionRunSnapshot(
+                sessionId, runId, current.workspaceId(), prompt,
                 current.turns().stream()
                         .filter(turn -> turn.state() == Session.TurnState.COMPLETED)
                         .toList());
@@ -58,7 +59,7 @@ public final class SessionService {
      * 设计意图：先写入只有 user 的 incomplete Turn，成功后再原子补齐 Assistant；不提前伪造完成消息对。
      * 关键约束：只有 completed Turn 能进入 completedHistory；同一 runId 不能重复追加，否则重试会复制用户输入。
      */
-    public RunSession beginRun(String sessionId, String runId, String prompt) {
+    public SessionRunSnapshot beginRun(String sessionId, String runId, String prompt) {
         Session current = sessionStore.read(sessionId);
         if (current.turns().stream().anyMatch(turn -> turn.runId().equals(runId))) {
             throw SessionException.runAlreadyExists();
@@ -77,11 +78,12 @@ public final class SessionService {
         List<Session.Turn> completedHistory = current.turns().stream()
                 .filter(turn -> turn.state() == Session.TurnState.COMPLETED)
                 .toList();
-        return new RunSession(sessionId, runId, current.workspaceId(), prompt, completedHistory);
+        return new SessionRunSnapshot(
+                sessionId, runId, current.workspaceId(), prompt, completedHistory);
     }
 
     public void completeRun(
-            RunSession run,
+            SessionRunSnapshot run,
             String assistantContent,
             List<Session.ToolHistory> toolHistory) {
         Session current = sessionStore.read(run.sessionId());
@@ -112,15 +114,4 @@ public final class SessionService {
                 current.sessionId(), current.workspaceId(), current.createdAt(), now, updatedTurns));
     }
 
-    public record RunSession(
-            String sessionId,
-            String runId,
-            String workspaceId,
-            String prompt,
-            List<Session.Turn> completedHistory) {
-
-        public RunSession {
-            completedHistory = List.copyOf(completedHistory);
-        }
-    }
 }
