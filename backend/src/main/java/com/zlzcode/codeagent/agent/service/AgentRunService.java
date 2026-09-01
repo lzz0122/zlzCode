@@ -107,6 +107,11 @@ public class AgentRunService {
         if (runExecutor != null) runExecutor.shutdownNow();
     }
 
+    /*
+     * 背景：HTTP 重试可能在第一次提交已落盘后再次到达，必须避免重复创建 Turn 和重复执行工具。
+     * 设计意图：先按 Session 作用域的幂等键复用或拒绝冲突请求，再持久化 RUNNING 并提交后台任务。
+     * 关键约束：RunStore 成功记录 RUNNING 后才能入队；不能把幂等判断放到异步任务中，否则响应与执行会脱节。
+     */
     public synchronized RunResponse submit(AgentRunRequest request) {
         String key = request.idempotencyKey().trim();
         String fingerprint = fingerprint(request);
@@ -129,6 +134,11 @@ public class AgentRunService {
         return RunResponse.from(record);
     }
 
+    /*
+     * 背景：客户端断线后仍可能重新连接，但中间事件不需要历史回放，最终状态必须可查询。
+     * 设计意图：运行中只暴露内存实时旁路，已结束 Run 从持久化结果构造终态事件。
+     * 关键约束：必须同时校验 sessionId 和 runId；不能仅凭不可猜的 Run ID 授权访问。
+     */
     public Flux<AgentEvent> events(String sessionId, String runId) {
         RunRecord record = runStore.read(sessionId, runId);
         ManagedRun active = activeRuns.get(runId);
@@ -152,6 +162,11 @@ public class AgentRunService {
         return RunResponse.from(runStore.read(sessionId, runId));
     }
 
+    /*
+     * 背景：同一 Session 的多个 Run 共享会话历史，完成顺序必须与提交顺序一致。
+     * 设计意图：用按 Session 链接的 Future 串行化任务，同时让不同 Session 使用有界执行器并行。
+     * 关键约束：链必须等待完整 Run 终态，不能在 subscribe 后立即返回，否则后续 Run 会并发读取旧历史。
+     */
     private void enqueue(
             AgentRunRequest request,
             SessionService.RunSession sessionRun,
@@ -170,6 +185,11 @@ public class AgentRunService {
         current.whenComplete((ignored, error) -> sessionTails.remove(request.sessionId(), current));
     }
 
+    /*
+     * 背景：后台 Run 的生命周期不能由 SSE 订阅拥有，客户端断开时模型和工具仍需继续执行并收口结果。
+     * 设计意图：在独立执行器中刷新会话历史、运行 ReAct 流并施加整体超时，再统一投影成功或失败状态。
+     * 关键约束：异常必须进入 fail 并终止事件流；不能让订阅取消或单次调用超时留下永久 RUNNING。
+     */
     private Mono<Void> execute(
             AgentRunRequest request,
             SessionService.RunSession sessionRun,
@@ -210,6 +230,11 @@ public class AgentRunService {
         activeRuns.remove(managed.runId);
     }
 
+    /*
+     * 背景：SSE 已经开始输出后，HTTP 异常处理器无法修改响应，只能发送安全的终态错误事件。
+     * 设计意图：复用统一异常映射，同时先持久化 FAILED 再结束旁路，让断线后的查询仍能得到结论。
+     * 关键约束：错误消息不得泄露堆栈、密钥或本机路径；失败收口后不能再发送 Completed。
+     */
     private void fail(ManagedRun managed, Throwable error) {
         AgentEvent.Error event = agentRunExceptionMapper.mapException(error)
                 .onErrorReturn(new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false))
@@ -258,6 +283,11 @@ public class AgentRunService {
                 .concatMapIterable(RunLoopState::pendingEvents);
     }
 
+    /*
+     * 背景：ReAct 每一步都可能触发异步模型或工具操作，分散的递归流难以审查合法终态。
+     * 设计意图：把每个 phase 的唯一后继集中在一个推进器中，事件只从状态快照投影出去。
+     * 关键约束：只能沿枚举定义的方向前进，COMPLETED 必须是唯一无后继状态，不能绕过持久化阶段。
+     */
     private Publisher<? extends RunLoopState> advanceRunState(RunLoopState state) {
         return switch (state.phase()) {
             case INITIAL -> Mono.just(state.transitionTo(RunPhase.REQUEST_MODEL));
@@ -281,6 +311,11 @@ public class AgentRunService {
                 buildLlmRequest(context, context.messages(), tools)));
     }
 
+    /*
+     * 背景：模型结果可能是最终文本，也可能是需要本机执行的工具调用，二者对历史消息和事件顺序要求不同。
+     * 设计意图：先记录模型 Turn，再把结果分类为回答、工具或非法响应，避免在多个分支重复计数。
+     * 关键约束：工具调用必须先写入 AssistantToolCalls 并发出 ToolStarted，最终文本不能带着未完成工具调用写入。
+     */
     private Publisher<? extends RunLoopState> handleModelTurn(RunLoopState state) {
         AgentRunContext context = state.context();
         LlmTurnResult result = state.modelTurnResult();
@@ -307,6 +342,11 @@ public class AgentRunService {
                         call.id(), toolRegistry.displayName(call.name()), null))));
     }
 
+    /*
+     * 背景：工具额度和工具注册状态是模型进入本机执行边界前的最后校验。
+     * 设计意图：已注册工具的业务失败交给下一轮模型修正，协议非法或额度耗尽则终止 Run。
+     * 关键约束：每轮最多接受一个工具调用；不能因为工具不可用而绕过额度校验或执行校验。
+     */
     private ModelTurnOutcome classifyModelTurn(AgentRunContext context, LlmTurnResult result) {
         if (result.hasToolCalls()) {
             if (result.toolCalls().size() != 1 || !context.canExecuteTool()) {
@@ -320,6 +360,11 @@ public class AgentRunService {
         return new ModelTurnOutcome.AnswerReady(result.content());
     }
 
+    /*
+     * 背景：工具结果既要形成前端轨迹事件，也要成为下一轮模型可见的 ToolResult 消息。
+     * 设计意图：先由 Context 原子记录执行结果，再推进到下一次模型请求，避免两套历史分叉。
+     * 关键约束：ToolFinished 必须先于下一轮请求；执行异常不能伪造成功结果或继续发送 Completed。
+     */
     private Publisher<? extends RunLoopState> executeToolCall(RunLoopState state) {
         return toolRegistry.execute(
                         state.toolCall().name(), state.context().workspace(), state.toolCall().arguments())
@@ -410,6 +455,11 @@ public class AgentRunService {
             LlmToolCall toolCall,
             List<AgentEvent> pendingEvents) {
 
+        /*
+         * 背景：状态机不同阶段携带的数据不同，Java record 需要用可空字段表达尚未产生的结果。
+         * 设计意图：通过各个工厂方法集中构造状态，保持 phase 与 payload 的更新同步。
+         * 关键约束：新增 phase 时必须同步定义其必需字段和唯一转移，不能直接读取其他阶段的可空数据。
+         */
         private RunLoopState {
             pendingEvents = List.copyOf(pendingEvents);
         }
