@@ -6,6 +6,7 @@ import com.zlzcode.codeagent.openai.dto.OpenAiConnectionInput;
 import com.zlzcode.codeagent.openai.protocol.OpenAiChatProtocol;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
@@ -16,12 +17,15 @@ public class OpenAiChatClient {
 
     private final OpenAiTransportClient transportClient;
     private final OpenAiChatProtocol chatProtocol;
+    private final Duration requestTimeout;
 
     public OpenAiChatClient(
             OpenAiTransportClient transportClient,
-            OpenAiChatProtocol chatProtocol) {
+            OpenAiChatProtocol chatProtocol,
+            @Value("${codeagent.run.model-timeout:PT2M}") Duration requestTimeout) {
         this.transportClient = transportClient;
         this.chatProtocol = chatProtocol;
+        this.requestTimeout = requestTimeout;
     }
 
     public Flux<LlmStreamEvent> chat(
@@ -36,7 +40,7 @@ public class OpenAiChatClient {
         return transportClient.postEventStream(
                         connection, "/chat/completions",
                         chatProtocol.encodeChatRequest(request),
-                        Duration.ofSeconds(120), OpenAiIntegrationException::fromStatus)
+                         requestTimeout, OpenAiIntegrationException::fromStatus)
                 .map(chatProtocol::decodeStreamFrame)
                 .takeUntil(frame -> {
                     if (frame.done()) receivedDone.set(true);

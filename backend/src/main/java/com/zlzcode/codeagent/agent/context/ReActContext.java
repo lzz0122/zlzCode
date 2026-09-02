@@ -1,11 +1,11 @@
 package com.zlzcode.codeagent.agent.context;
 
+import com.zlzcode.codeagent.agent.dto.AgentEvent;
 import com.zlzcode.codeagent.agent.model.LlmMessage;
 import com.zlzcode.codeagent.agent.model.LlmToolCall;
 import com.zlzcode.codeagent.agent.model.LlmTurnResult;
-import com.zlzcode.codeagent.openai.dto.OpenAiConnectionInput;
+import com.zlzcode.codeagent.agent.model.RunExecution;
 import com.zlzcode.codeagent.session.model.Session;
-import com.zlzcode.codeagent.session.service.SessionService;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 
@@ -16,12 +16,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * 一次 Agent Run 的临时状态聚合，不跨请求或 Session 复用。
+ * 一次 ReAct 执行的临时状态聚合，不跨请求或 Session 复用。
  */
-public final class AgentRunContext {
+public final class ReActContext {
 
-    private final RunConfiguration configuration;
-    private final SessionService.RunSession sessionRun;
+    private final RunExecution execution;
     private final AuthorizedWorkspace workspace;
     private final long startedAtNanos;
     private final List<LlmMessage> messages;
@@ -33,15 +32,14 @@ public final class AgentRunContext {
     private int toolCallsUsed;
     private Integer inputTokens;
     private Integer outputTokens;
+    private String finalAnswer;
 
-    public AgentRunContext(
-            RunConfiguration configuration,
-            SessionService.RunSession sessionRun,
+    public ReActContext(
+            RunExecution execution,
             AuthorizedWorkspace workspace,
             List<LlmMessage> initialMessages,
             long startedAtNanos) {
-        this.configuration = Objects.requireNonNull(configuration, "Run configuration cannot be null");
-        this.sessionRun = Objects.requireNonNull(sessionRun, "Session run cannot be null");
+        this.execution = Objects.requireNonNull(execution, "Run execution cannot be null");
         this.workspace = Objects.requireNonNull(workspace, "Authorized workspace cannot be null");
         this.startedAtNanos = startedAtNanos;
         if (initialMessages == null || initialMessages.isEmpty()) {
@@ -56,55 +54,20 @@ public final class AgentRunContext {
         }
     }
 
-    public RunConfiguration configuration() {
-        return configuration;
-    }
-
-    public SessionService.RunSession sessionRun() {
-        return sessionRun;
+    public RunExecution execution() {
+        return execution;
     }
 
     public AuthorizedWorkspace workspace() {
         return workspace;
     }
 
-    public long startedAtNanos() {
-        return startedAtNanos;
-    }
-
-    public List<LlmMessage> messages() {
+    public List<LlmMessage> messagesSnapshot() {
         return List.copyOf(messages);
     }
 
-    public int modelSteps() {
-        return modelSteps;
-    }
-
-    public int toolCallsUsed() {
-        return toolCallsUsed;
-    }
-
     public boolean canExecuteTool() {
-        return toolCallsUsed < configuration.maxToolCalls();
-    }
-
-    public Integer inputTokens() {
-        return inputTokens;
-    }
-
-    public Integer outputTokens() {
-        return outputTokens;
-    }
-
-    public List<Session.ToolHistory> sessionToolHistory() {
-        return toolExecutions.stream()
-                .map(record -> new Session.ToolHistory(
-                        record.name(), record.arguments(), record.modelResult()))
-                .toList();
-    }
-
-    public List<ToolExecutionRecord> toolExecutions() {
-        return List.copyOf(toolExecutions);
+        return toolCallsUsed < execution.options().maxToolCalls();
     }
 
     /*
@@ -157,7 +120,30 @@ public final class AgentRunContext {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("Final assistant content cannot be blank");
         }
+        finalAnswer = content;
         messages.add(new LlmMessage.TextMessage(LlmMessage.MessageRole.ASSISTANT, content));
+    }
+
+    public Completion completion() {
+        if (finalAnswer == null || finalAnswer.isBlank()) {
+            throw new IllegalStateException("Run has no final answer");
+        }
+        long durationMs = Math.max(1L, java.time.Duration.ofNanos(
+                System.nanoTime() - startedAtNanos).toMillis());
+        List<Session.ToolHistory> sessionTools = toolExecutions.stream()
+                .map(record -> new Session.ToolHistory(
+                        record.name(), record.arguments(), record.modelResult()))
+                .toList();
+        List<AgentEvent.ToolHistory> eventTools = toolExecutions.stream()
+                .map(record -> new AgentEvent.ToolHistory(
+                        record.name(), record.arguments(), record.modelResult()))
+                .toList();
+        return new Completion(
+                finalAnswer,
+                sessionTools,
+                eventTools,
+                new AgentEvent.RunMetrics(
+                        modelSteps, durationMs, inputTokens, outputTokens));
     }
 
     private void appendToolResult(String callId, String content) {
@@ -225,24 +211,20 @@ public final class AgentRunContext {
         return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
     }
 
-    public record RunConfiguration(
-            String model,
-            String reasoningEffort,
-            int maxToolCalls,
-            OpenAiConnectionInput openai) {
+    public record Completion(
+            String finalAnswer,
+            List<Session.ToolHistory> sessionToolHistory,
+            List<AgentEvent.ToolHistory> toolHistory,
+            AgentEvent.RunMetrics metrics) {
 
-        public RunConfiguration {
-            if (model == null || model.isBlank()) {
-                throw new IllegalArgumentException("Run model cannot be blank");
-            }
-            if (maxToolCalls < 1) {
-                throw new IllegalArgumentException("Run max tool calls must be positive");
-            }
-            openai = Objects.requireNonNull(openai, "Run OpenAI connection cannot be null");
+        public Completion {
+            sessionToolHistory = List.copyOf(sessionToolHistory);
+            toolHistory = List.copyOf(toolHistory);
+            Objects.requireNonNull(metrics, "Run metrics cannot be null");
         }
     }
 
-    public record ToolExecutionRecord(
+    private record ToolExecutionRecord(
             String name,
             String arguments,
             String modelResult,
