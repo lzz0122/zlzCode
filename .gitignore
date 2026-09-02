@@ -5,7 +5,10 @@
 
 # Local Agent rules and design documents
 agent.md
+AGENTS.md
+CONTEXT.md
 docs/
+.scratch/
 
 # Local environments, configuration, and secrets
 .env
