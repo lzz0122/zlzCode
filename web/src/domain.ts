@@ -142,6 +142,7 @@ export type AgentEvent =
 
 export interface RunRequest {
   sessionId: string
+  idempotencyKey: string
   prompt: string
   model: string
   reasoningEffort?: string

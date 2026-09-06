@@ -386,6 +386,7 @@ export default function App() {
     try {
       for await (const event of gateway.run({
         sessionId: session.id,
+        idempotencyKey: createId('run'),
         prompt,
         ...runConfiguration,
       }, controller.signal)) {
