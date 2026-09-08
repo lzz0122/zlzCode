@@ -104,7 +104,7 @@ final class AgentRunExecutor {
                             .flatMap(workspace -> {
                                 List<com.zlzcode.codeagent.agent.model.LlmMessage> initialMessages =
                                         historyBuilder.build(
-                                                AgentLlmContract.systemPrompt(toolRegistry.promptToolName()),
+                                                AgentLlmContract.systemPrompt(),
                                                 sessionRun.completedHistory(),
                                                 sessionRun.prompt());
                                 ReActContext context = new ReActContext(
