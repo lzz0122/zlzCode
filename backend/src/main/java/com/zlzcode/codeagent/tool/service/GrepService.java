@@ -40,6 +40,11 @@ public class GrepService implements ToolHandler {
         this.properties = properties;
     }
 
+    /*
+     * 背景：内容搜索同时包含目录遍历和文件读取，两者都是阻塞式 I/O，不能占用 WebFlux 事件线程。
+     * 设计意图：在 boundedElastic 上按稳定路径顺序逐文件搜索，用统一工具超时结束单次调用，不增加并发协调。
+     * 关键约束：不能并行改写结果顺序，也不能回到事件线程或旧超时键；否则结果不稳定或请求链被阻塞。
+     */
     @Override
     public Mono<ToolExecutionResult> execute(ToolExecutionContext context, String arguments) {
         return Mono.<ToolExecutionResult>fromCallable(() -> new ToolCompleted(search(context, parse(arguments))))

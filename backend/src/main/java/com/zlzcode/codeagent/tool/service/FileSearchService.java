@@ -147,7 +147,11 @@ public class FileSearchService {
                     }
                 }
             } catch (IOException ignored) {
-                // Happy Path：无法读取根 ignore 文件时继续普通搜索，不引入独立恢复或诊断通道。
+                /*
+                 * 背景：ignore 文件只影响结果筛选，不是工作区授权来源；损坏它不应阻断基本搜索演示。
+                 * 设计意图：首版回退为没有该文件的规则，而不是建立诊断、重试或恢复通道。
+                 * 关键约束：只能忽略根 ignore 文件自身的读取失败；路径授权和实际搜索 I/O 失败不能在这里吞掉。
+                 */
             }
         }
 

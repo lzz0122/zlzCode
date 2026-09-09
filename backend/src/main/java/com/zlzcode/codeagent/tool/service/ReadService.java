@@ -41,6 +41,11 @@ public class ReadService implements ToolHandler {
         this.properties = properties;
     }
 
+    /*
+     * 背景：真实文件读取使用阻塞式 NIO，直接运行在 WebFlux 事件线程会阻塞其他请求。
+     * 设计意图：保持 Handler 自包含，用 boundedElastic 执行一次读取并消费统一工具超时，不增加额外调度抽象。
+     * 关键约束：不能切回事件线程或旧的 codeagent.run.tool-timeout；否则会阻塞响应链或形成两套超时语义。
+     */
     @Override
     public Mono<ToolExecutionResult> execute(ToolExecutionContext context, String arguments) {
         return Mono.<ToolExecutionResult>fromCallable(() -> new ToolCompleted(read(context, parse(arguments))))

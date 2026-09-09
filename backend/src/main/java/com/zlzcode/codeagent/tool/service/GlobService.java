@@ -33,6 +33,11 @@ public class GlobService implements ToolHandler {
         this.properties = properties;
     }
 
+    /*
+     * 背景：目录遍历是阻塞式 NIO 操作，工作区规模不能由事件线程假定。
+     * 设计意图：首版只做 boundedElastic 上的顺序扫描，并由统一工具超时收口，不引入并发搜索器。
+     * 关键约束：不能在 WebFlux 事件线程遍历，也不能改用概览工具旧超时键；前者会阻塞请求，后者会分裂配置合同。
+     */
     @Override
     public Mono<ToolExecutionResult> execute(ToolExecutionContext context, String arguments) {
         return Mono.<ToolExecutionResult>fromCallable(() -> new ToolCompleted(search(context, parse(arguments))))
