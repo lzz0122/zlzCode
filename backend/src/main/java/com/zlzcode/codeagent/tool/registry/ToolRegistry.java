@@ -3,9 +3,14 @@ package com.zlzcode.codeagent.tool.registry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.codeagent.agent.model.LlmRequest;
 import com.zlzcode.codeagent.tool.definition.ToolDefinition;
+import com.zlzcode.codeagent.tool.handler.MutationToolHandler;
 import com.zlzcode.codeagent.tool.handler.ToolHandler;
+import com.zlzcode.codeagent.tool.model.ApprovalRequired;
+import com.zlzcode.codeagent.tool.model.MutationPlan;
+import com.zlzcode.codeagent.tool.model.ToolCompleted;
+import com.zlzcode.codeagent.tool.model.ToolExecutionContext;
+import com.zlzcode.codeagent.tool.model.ToolExecutionResult;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
-import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -80,11 +85,11 @@ public final class ToolRegistry {
         return find(name).displayName();
     }
 
-    public Mono<ToolOutcome> execute(
+    public Mono<ToolExecutionResult> execute(
             String name,
-            AuthorizedWorkspace workspace,
+            ToolExecutionContext context,
             String arguments) {
-        return execute(find(name), workspace, arguments);
+        return execute(find(name), context, arguments);
     }
 
     /*
@@ -92,27 +97,87 @@ public final class ToolRegistry {
      * 设计意图：由 Registry 串联查找后的定义校验与 Handler 执行，避免 Agent 层重复实现工具协议。
      * 关键约束：必须先完成 validate 再调用 handler；任何绕过校验的路径都可能把未授权参数传入工具。
      */
-    public Mono<ToolOutcome> execute(
+    public Mono<ToolExecutionResult> execute(
             RegisteredTool tool,
-            AuthorizedWorkspace workspace,
+            ToolExecutionContext context,
             String arguments) {
+        Objects.requireNonNull(tool, "Registered tool cannot be null");
+        Objects.requireNonNull(context, "Tool execution context cannot be null");
         if (!tool.available()) {
-            return Mono.just(ToolOutcome.failure(
+            return Mono.just(new ToolCompleted(ToolOutcome.failure(
                     objectMapper,
                     "TOOL_NOT_AVAILABLE",
                     "未执行未知工具",
-                    "The requested tool is not available."));
+                    "The requested tool is not available.")));
         }
 
         ToolDefinition.Validation validation = tool.definition().validate(arguments);
         if (!validation.valid()) {
-            return Mono.just(ToolOutcome.failure(
+            return Mono.just(new ToolCompleted(ToolOutcome.failure(
                     objectMapper,
                     validation.code(),
                     validation.presentation(),
-                    "The tool arguments are invalid."));
+                    "The tool arguments are invalid.")));
         }
-        return tool.handler().execute(workspace, arguments);
+        return Mono.defer(() -> requireResult(
+                        tool.handler().execute(context, arguments),
+                        "Tool execute returned no result"))
+                .map(result -> validateExecutionResult(tool, context, result));
+    }
+
+    /*
+     * 背景：批准后的提交必须回到生成固定计划的修改工具，不能重新走模型参数校验或普通 execute。
+     * 设计意图：Registry 只验证调用身份和修改能力，再把原计划分发给对应 MutationToolHandler。
+     * 关键约束：不能把只读 Handler 当作修改工具，也不能接受其他 Run、调用或工具名的计划；否则审批可能授权错误操作。
+     */
+    public Mono<ToolOutcome> commit(
+            ToolExecutionContext context,
+            MutationPlan plan) {
+        Objects.requireNonNull(context, "Tool execution context cannot be null");
+        Objects.requireNonNull(plan, "Mutation plan cannot be null");
+        RegisteredTool tool = find(plan.toolName());
+        if (!tool.available() || !(tool.handler() instanceof MutationToolHandler mutationHandler)) {
+            return Mono.error(protocolError("Mutation tool is not available"));
+        }
+        validatePlan(tool, context, plan);
+        return Mono.defer(() -> requireResult(
+                mutationHandler.commit(context, plan),
+                "Tool commit returned no outcome"));
+    }
+
+    private ToolExecutionResult validateExecutionResult(
+            RegisteredTool tool,
+            ToolExecutionContext context,
+            ToolExecutionResult result) {
+        if (result instanceof ApprovalRequired approval) {
+            if (!(tool.handler() instanceof MutationToolHandler)) {
+                throw protocolError("Read-only tool returned an approval plan");
+            }
+            validatePlan(tool, context, approval.plan());
+        }
+        return result;
+    }
+
+    private void validatePlan(
+            RegisteredTool tool,
+            ToolExecutionContext context,
+            MutationPlan plan) {
+        if (!context.runId().equals(plan.runId())
+                || !context.toolCallId().equals(plan.toolCallId())
+                || !tool.definition().name().equals(plan.toolName())) {
+            throw protocolError("Mutation plan identity does not match the tool call");
+        }
+    }
+
+    private static <T> Mono<T> requireResult(Mono<T> result, String message) {
+        if (result == null) {
+            return Mono.error(protocolError(message));
+        }
+        return result.switchIfEmpty(Mono.error(protocolError(message)));
+    }
+
+    private static IllegalStateException protocolError(String message) {
+        return new IllegalStateException(message);
     }
 
     public record RegisteredTool(
