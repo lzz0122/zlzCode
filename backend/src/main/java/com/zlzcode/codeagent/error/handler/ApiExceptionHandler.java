@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import org.springframework.web.server.ServerWebInputException;
 
@@ -21,6 +22,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(WebExchangeBindException.class)
     public ResponseEntity<ApiErrorResponse> handleValidation(WebExchangeBindException exception) {
+        return response(HttpStatus.UNPROCESSABLE_ENTITY,
+                "INVALID_REQUEST", "请求结构无效", false);
+    }
+
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodValidation(
+            HandlerMethodValidationException exception) {
         return response(HttpStatus.UNPROCESSABLE_ENTITY,
                 "INVALID_REQUEST", "请求结构无效", false);
     }
