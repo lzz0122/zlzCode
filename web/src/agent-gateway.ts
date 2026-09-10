@@ -40,6 +40,10 @@ interface ModelListResponse {
 interface RunResponse {
   runId: unknown
   sessionId: unknown
+  status?: unknown
+  errorCode?: unknown
+  errorMessage?: unknown
+  errorRetryable?: unknown
 }
 
 type JsonRecord = Record<string, unknown>
@@ -314,7 +318,55 @@ export class HttpAgentGateway implements AgentGateway {
       'Agent 事件流请求',
     )
     if (!eventsResponse.ok) throw await apiError(eventsResponse, 'Agent 事件流请求')
-    for await (const event of parseAgentEventStream(eventsResponse)) yield event
+    try {
+      for await (const event of parseAgentEventStream(eventsResponse)) yield event
+    } catch (streamError) {
+      if (streamError instanceof DOMException && streamError.name === 'AbortError') {
+        throw streamError
+      }
+
+      /*
+       * 背景：SSE 只是 Run 的实时交付通道，无终态断流时前端会丢失 RunStore 中已收口的失败原因。
+       * 设计意图：仅在流解析失败后读取一次同一 Run，再复用现有 error 事件链路展示持久化结论。
+       * 关键约束：查询必须携带原 sessionId，且不得改为轮询或成功恢复，否则会扩大协议范围并混淆 SSE 事件顺序。
+       */
+      const runResponse = await apiFetch(
+        this.endpoint(`/api/agent/runs/${encodeURIComponent(payload.runId)}?sessionId=${encodeURIComponent(request.sessionId)}`),
+        { method: 'GET', headers: { Accept: 'application/json' }, signal },
+        'Agent 运行状态请求',
+      )
+      if (!runResponse.ok) throw await apiError(runResponse, 'Agent 运行状态请求')
+
+      const currentRun = await runResponse.json() as RunResponse
+      if (currentRun.runId !== payload.runId || currentRun.sessionId !== request.sessionId) {
+        throw new AgentGatewayError('Agent 运行状态请求失败：Java 后端返回了无效运行结构', {
+          code: 'RUN_RESPONSE_INVALID',
+          retryable: false,
+        })
+      }
+      if (currentRun.status === 'FAILED'
+        && typeof currentRun.errorCode === 'string'
+        && typeof currentRun.errorMessage === 'string'
+        && typeof currentRun.errorRetryable === 'boolean') {
+        yield {
+          type: 'error',
+          code: currentRun.errorCode,
+          message: currentRun.errorMessage,
+          retryable: currentRun.errorRetryable,
+        }
+        return
+      }
+      if (currentRun.status === 'RUNNING') {
+        yield {
+          type: 'error',
+          code: 'AGENT_RUN_UNAVAILABLE',
+          message: 'Agent 运行状态已丢失，请重新发起任务',
+          retryable: true,
+        }
+        return
+      }
+      throw streamError
+    }
   }
 
   async decideConfirmation(

@@ -96,6 +96,8 @@ export interface Message {
   createdAt: number
   state: 'complete' | 'running' | 'error' | 'cancelled'
   statusLabel?: string
+  errorCode?: string
+  errorRetryable?: boolean
   tools?: ToolStep[]
   toolHistory?: ConversationToolHistory[]
   metrics?: RunMetrics
@@ -267,6 +269,8 @@ export function applyAgentEvent(message: Message, event: AgentEvent): Message {
         state: 'error',
         statusLabel: '运行失败',
         content: message.content || event.message,
+        errorCode: event.code,
+        errorRetryable: event.retryable,
         tools: settleRunningTools(message.tools, 'failed', event.message),
       }
   }
