@@ -23,6 +23,7 @@ export interface AgentGateway {
   run(request: RunRequest, signal: AbortSignal): AsyncIterable<AgentEvent>
   decideConfirmation(
     runId: string,
+    sessionId: string,
     confirmationId: string,
     decision: 'approve' | 'reject',
   ): Promise<void>
@@ -41,9 +42,24 @@ interface RunResponse {
   runId: unknown
   sessionId: unknown
   status?: unknown
+  pendingApprovalId?: unknown
+  pendingToolCallId?: unknown
   errorCode?: unknown
   errorMessage?: unknown
   errorRetryable?: unknown
+}
+
+interface ApprovalResponse {
+  approvalId: unknown
+  sessionId: unknown
+  runId: unknown
+  toolCallId: unknown
+  status: unknown
+  expiresAt: unknown
+  toolName: unknown
+  relativePaths: unknown
+  presentationSummary: unknown
+  runStatus: unknown
 }
 
 type JsonRecord = Record<string, unknown>
@@ -60,6 +76,10 @@ function timestamp(value: unknown): number | undefined {
   if (typeof value !== 'string') return undefined
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function pollingDelay(): Promise<'poll'> {
+  return new Promise(resolve => window.setTimeout(() => resolve('poll'), 400))
 }
 
 function sessionResponseError(): AgentGatewayError {
@@ -319,7 +339,100 @@ export class HttpAgentGateway implements AgentGateway {
     )
     if (!eventsResponse.ok) throw await apiError(eventsResponse, 'Agent 事件流请求')
     try {
-      for await (const event of parseAgentEventStream(eventsResponse)) yield event
+      const events = parseAgentEventStream(eventsResponse)[Symbol.asyncIterator]()
+      let nextEvent = await events.next()
+      while (!nextEvent.done) {
+        const event = nextEvent.value
+        yield event
+
+        if (event.type !== 'tool_started') {
+          nextEvent = await events.next()
+          continue
+        }
+
+        const followingEvent = events.next()
+        while (true) {
+          const result = await Promise.race([
+            followingEvent.then(value => ({ kind: 'event' as const, value })),
+            pollingDelay().then(() => ({ kind: 'poll' as const })),
+          ])
+          if (result.kind === 'event') {
+            nextEvent = result.value
+            break
+          }
+
+          const runResponse = await apiFetch(
+            this.endpoint(`/api/agent/runs/${encodeURIComponent(payload.runId)}?sessionId=${encodeURIComponent(request.sessionId)}`),
+            { method: 'GET', headers: { Accept: 'application/json' }, signal },
+            '查询文件变更审批',
+          )
+          if (!runResponse.ok) throw await apiError(runResponse, '查询文件变更审批')
+          const currentRun = await runResponse.json() as RunResponse
+          if (currentRun.runId !== payload.runId || currentRun.sessionId !== request.sessionId) {
+            throw new AgentGatewayError('查询文件变更审批失败：Java 后端返回了无效运行结构', {
+              code: 'RUN_RESPONSE_INVALID',
+              retryable: false,
+            })
+          }
+          if (currentRun.status !== 'WAITING_APPROVAL') continue
+
+          const approvalId = requiredString(currentRun.pendingApprovalId)
+          const toolCallId = requiredString(currentRun.pendingToolCallId)
+          if (approvalId === undefined || toolCallId !== event.id) {
+            throw new AgentGatewayError('查询文件变更审批失败：Java 后端返回了无效待审批状态', {
+              code: 'APPROVAL_RESPONSE_INVALID',
+              retryable: false,
+            })
+          }
+
+          const approvalResponse = await apiFetch(
+            this.endpoint(`/api/agent/runs/${encodeURIComponent(payload.runId)}/approvals/${encodeURIComponent(approvalId)}?sessionId=${encodeURIComponent(request.sessionId)}`),
+            { method: 'GET', headers: { Accept: 'application/json' }, signal },
+            '读取文件变更审批',
+          )
+          if (!approvalResponse.ok) throw await apiError(approvalResponse, '读取文件变更审批')
+          const approval = await approvalResponse.json() as ApprovalResponse
+          const relativePaths = Array.isArray(approval.relativePaths)
+            ? approval.relativePaths.filter((path): path is string => typeof path === 'string')
+            : []
+          const presentation = requiredString(approval.presentationSummary)
+          const expiresAt = requiredString(approval.expiresAt)
+          if (approval.approvalId !== approvalId
+            || approval.sessionId !== request.sessionId
+            || approval.runId !== payload.runId
+            || approval.toolCallId !== toolCallId
+            || approval.status !== 'PENDING'
+            || approval.runStatus !== 'WAITING_APPROVAL'
+            || relativePaths.length === 0
+            || presentation === undefined
+            || expiresAt === undefined) {
+            throw new AgentGatewayError('读取文件变更审批失败：Java 后端返回了无效审批结构', {
+              code: 'APPROVAL_RESPONSE_INVALID',
+              retryable: false,
+            })
+          }
+
+          const [summary, ...previewLines] = presentation.split('\n')
+          /*
+           * 背景：后端按协议在 WAITING_APPROVAL 期间保持 SSE 静默，前端只能通过 Run pending ID 发现审批。
+           * 设计意图：把查询到的 Approval 投影为现有页面事件，复用工具卡和后续原 SSE，不新增第二套 UI 状态机。
+           * 关键约束：事件必须沿用 pendingToolCallId；若创建新工具 ID，会同时留下“正在写入”和“等待审批”两张卡片。
+           */
+          yield {
+            type: 'tool_confirmation_required',
+            id: toolCallId,
+            confirmationId: approvalId,
+            label: approval.toolName === 'write' ? '写入文件' : String(approval.toolName),
+            operation: summary.startsWith('将创建 ') ? 'create' : 'overwrite',
+            path: relativePaths[0],
+            summary,
+            diff: previewLines.join('\n').trim() || presentation,
+            expiresAt,
+          }
+          nextEvent = await followingEvent
+          break
+        }
+      }
     } catch (streamError) {
       if (streamError instanceof DOMException && streamError.name === 'AbortError') {
         throw streamError
@@ -328,7 +441,7 @@ export class HttpAgentGateway implements AgentGateway {
       /*
        * 背景：SSE 只是 Run 的实时交付通道，无终态断流时前端会丢失 RunStore 中已收口的失败原因。
        * 设计意图：仅在流解析失败后读取一次同一 Run，再复用现有 error 事件链路展示持久化结论。
-       * 关键约束：查询必须携带原 sessionId，且不得改为轮询或成功恢复，否则会扩大协议范围并混淆 SSE 事件顺序。
+       * 关键约束：查询必须携带原 sessionId，且不得用此失败兜底替代上方审批轮询或恢复成功结果，否则会混淆 SSE 事件顺序。
        */
       const runResponse = await apiFetch(
         this.endpoint(`/api/agent/runs/${encodeURIComponent(payload.runId)}?sessionId=${encodeURIComponent(request.sessionId)}`),
@@ -371,12 +484,13 @@ export class HttpAgentGateway implements AgentGateway {
 
   async decideConfirmation(
     runId: string,
+    sessionId: string,
     confirmationId: string,
     decision: 'approve' | 'reject',
   ): Promise<void> {
     const response = await apiFetch(
       this.endpoint(
-        `/api/agent/runs/${encodeURIComponent(runId)}/confirmations/${encodeURIComponent(confirmationId)}`,
+        `/api/agent/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(confirmationId)}`,
       ),
       {
         method: 'POST',
@@ -384,11 +498,14 @@ export class HttpAgentGateway implements AgentGateway {
           Accept: 'application/json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({
+          sessionId,
+          decision: decision === 'approve' ? 'APPROVE' : 'REJECT',
+        }),
       },
-      '提交文件变更确认',
+      '提交文件变更审批',
     )
-    if (!response.ok) throw await apiError(response, '提交文件变更确认')
+    if (!response.ok) throw await apiError(response, '提交文件变更审批')
   }
 }
 
