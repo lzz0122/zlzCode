@@ -9,6 +9,10 @@ import com.zlzcode.codeagent.agent.model.LlmTurnResult;
 import com.zlzcode.codeagent.agent.stream.LlmTurnStreamProcessor;
 import com.zlzcode.codeagent.openai.client.OpenAiChatClient;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
+import com.zlzcode.codeagent.tool.model.ApprovalRequired;
+import com.zlzcode.codeagent.tool.model.ToolCompleted;
+import com.zlzcode.codeagent.tool.model.ToolExecutionContext;
+import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import org.reactivestreams.Publisher;
 import org.springframework.stereotype.Component;
@@ -33,11 +37,13 @@ final class AgentReActLoop {
         this.turnStreamProcessor = turnStreamProcessor;
     }
 
-    Flux<AgentEvent> run(ReActContext context) {
+    Flux<AgentEvent> run(
+            ReActContext context,
+            ToolApprovalCoordinator approvalCoordinator) {
         return Flux.concat(
                 Flux.just(new AgentEvent.Status("正在发送"), new AgentEvent.Status("正在分析")),
                 Flux.just(RunLoopState.initial(context))
-                        .expandDeep(this::advanceRunState)
+                        .expandDeep(state -> advanceRunState(state, approvalCoordinator))
                         .concatMapIterable(RunLoopState::pendingEvents));
     }
 
@@ -46,13 +52,15 @@ final class AgentReActLoop {
      * 设计意图：把每个 phase 的唯一后继集中在一个推进器中，事件只从状态快照投影出去。
      * 关键约束：只能沿枚举定义的方向前进，ANSWER_READY 是循环的唯一终点，持久化由 Executor 负责。
      */
-    private Publisher<? extends RunLoopState> advanceRunState(RunLoopState state) {
+    private Publisher<? extends RunLoopState> advanceRunState(
+            RunLoopState state,
+            ToolApprovalCoordinator approvalCoordinator) {
         return switch (state.phase()) {
             case INITIAL -> Mono.just(state.transitionTo(RunPhase.REQUEST_MODEL));
             case REQUEST_MODEL -> collectModelTurn(state.context())
                     .map(result -> state.withModelResult(RunPhase.MODEL_RESULT_READY, result));
             case MODEL_RESULT_READY -> handleModelTurn(state);
-            case TOOL_READY -> executeToolCall(state);
+            case TOOL_READY -> executeToolCall(state, approvalCoordinator);
             case TOOL_RESULT_READY -> Mono.just(state.transitionTo(RunPhase.REQUEST_MODEL));
             case ANSWER_READY -> Mono.empty();
         };
@@ -121,9 +129,23 @@ final class AgentReActLoop {
      * 设计意图：先由 Context 原子记录执行结果，再推进到下一次模型请求，避免两套历史分叉。
      * 关键约束：ToolFinished 必须先于下一轮请求；执行异常不能伪造成功结果或继续发送 Completed。
      */
-    private Publisher<? extends RunLoopState> executeToolCall(RunLoopState state) {
+    private Publisher<? extends RunLoopState> executeToolCall(
+            RunLoopState state,
+            ToolApprovalCoordinator approvalCoordinator) {
+        ToolExecutionContext executionContext = new ToolExecutionContext(
+                state.context().execution().runId(),
+                state.toolCall().id(),
+                state.context().workspace());
         return toolRegistry.execute(
-                        state.toolCall().name(), state.context().workspace(), state.toolCall().arguments())
+                        state.toolCall().name(), executionContext, state.toolCall().arguments())
+                .flatMap(result -> {
+                    if (result instanceof ToolCompleted completed) {
+                        return Mono.just(completed.outcome());
+                    }
+                    ApprovalRequired approval = (ApprovalRequired) result;
+                    return requireOutcome(
+                            approvalCoordinator.awaitOutcome(executionContext, approval.plan()));
+                })
                 .map(outcome -> {
                     state.context().recordToolExecution(state.toolCall(), outcome);
                     return state.withToolOutcomeEvents(
@@ -135,6 +157,20 @@ final class AgentReActLoop {
                                             outcome.presentation()),
                                     new AgentEvent.Status("正在整理结果")));
                 });
+    }
+
+    /*
+     * 背景：修改工具的中间计划不能写入模型历史，ReAct 只能接收审批流程的最终工具结果。
+     * 设计意图：在单一工具记录点之前拒绝空协调流，而不为审批分支建立第二套历史逻辑。
+     * 关键约束：Coordinator 必须产生且只产生一个 ToolOutcome；空 Mono 或空结果必须终止 Run，否则未完成调用会被误当成可继续状态。
+     */
+    private Mono<ToolOutcome> requireOutcome(Mono<ToolOutcome> outcome) {
+        if (outcome == null) {
+            return Mono.error(new IllegalStateException(
+                    "Tool approval coordinator returned no outcome"));
+        }
+        return outcome.switchIfEmpty(Mono.error(new IllegalStateException(
+                "Tool approval coordinator returned no outcome")));
     }
 
     private LlmRequest buildLlmRequest(

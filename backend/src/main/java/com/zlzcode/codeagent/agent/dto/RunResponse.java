@@ -11,6 +11,8 @@ public record RunResponse(
         String runId,
         String sessionId,
         RunStatus status,
+        String pendingApprovalId,
+        String pendingToolCallId,
         Instant createdAt,
         Instant updatedAt,
         Instant completedAt,
@@ -23,8 +25,9 @@ public record RunResponse(
 
     public static RunResponse from(RunRecord record) {
         return new RunResponse(
-                record.runId(), record.sessionId(), record.status(), record.createdAt(),
-                record.updatedAt(), record.completedAt(), record.finalAnswer(), record.toolHistory(),
-                record.metrics(), record.errorCode(), record.errorMessage(), record.errorRetryable());
+                record.runId(), record.sessionId(), record.status(), record.pendingApprovalId(),
+                record.pendingToolCallId(), record.createdAt(), record.updatedAt(), record.completedAt(),
+                record.finalAnswer(), record.toolHistory(), record.metrics(), record.errorCode(),
+                record.errorMessage(), record.errorRetryable());
     }
 }

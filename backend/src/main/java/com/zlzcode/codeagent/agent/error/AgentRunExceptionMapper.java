@@ -1,6 +1,7 @@
 package com.zlzcode.codeagent.agent.error;
 
 import com.zlzcode.codeagent.agent.dto.AgentEvent;
+import com.zlzcode.codeagent.agent.exception.ApprovalException;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.session.exception.SessionException;
 import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
@@ -33,6 +34,12 @@ public final class AgentRunExceptionMapper {
                     sessionException.getMessage(),
                     sessionException.code(),
                     sessionException.retryable()));
+        }
+        if (exception instanceof ApprovalException approvalException) {
+            return Mono.just(new AgentEvent.Error(
+                    approvalException.getMessage(),
+                    approvalException.code(),
+                    approvalException.retryable()));
         }
         return Mono.error(exception);
     }

@@ -12,6 +12,8 @@ public record RunRecord(
         String idempotencyKey,
         String requestFingerprint,
         RunStatus status,
+        String pendingApprovalId,
+        String pendingToolCallId,
         Instant createdAt,
         Instant updatedAt,
         Instant completedAt,
