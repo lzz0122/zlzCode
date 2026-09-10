@@ -35,21 +35,7 @@ public class WorkspacePathGuard {
      */
     public Path resolveExisting(Path workspaceRoot, String relativePath) throws IOException {
         Path root = canonicalDirectory(workspaceRoot);
-        final Path supplied;
-        try {
-            supplied = Path.of(relativePath == null ? "" : relativePath);
-        } catch (InvalidPathException exception) {
-            throw new IllegalArgumentException("workspace path is invalid", exception);
-        }
-        if (supplied.isAbsolute()) throw new IllegalArgumentException("workspace path must be relative");
-        for (Path segment : supplied) {
-            if ("..".equals(segment.toString())) {
-                throw new IllegalArgumentException("workspace path cannot contain parent traversal");
-            }
-        }
-
-        Path target = root.resolve(supplied).normalize();
-        if (!inside(root, target)) throw new IllegalArgumentException("workspace path leaves the workspace");
+        Path target = resolveRelative(root, relativePath);
 
         Path current = root;
         for (Path segment : root.relativize(target)) {
@@ -59,6 +45,30 @@ public class WorkspacePathGuard {
             }
         }
         if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) throw new NoSuchFileException(relativePath);
+        return target;
+    }
+
+    /*
+     * 背景：write 创建文件时末级目标尚不存在，但父目录和已有路径段仍必须处于授权工作区且不能经过链接。
+     * 设计意图：复用现有路径边界校验，只允许缺少最后一个路径项，不为修改工具放宽父目录检查。
+     * 关键约束：不能允许缺失父目录、链接父目录或绝对路径；否则提交阶段可能越界或隐式创建未审批目录。
+     */
+    public Path resolveMutationTarget(Path workspaceRoot, String relativePath) throws IOException {
+        Path root = canonicalDirectory(workspaceRoot);
+        Path target = resolveRelative(root, relativePath);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            return resolveExisting(root, relativePath);
+        }
+
+        Path parent = target.getParent();
+        if (parent == null || !inside(root, parent)) {
+            throw new IllegalArgumentException("workspace path leaves the workspace");
+        }
+        String relativeParent = root.equals(parent) ? "" : root.relativize(parent).toString();
+        Path existingParent = resolveExisting(root, relativeParent);
+        if (!Files.isDirectory(existingParent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new FileSystemException(relativePath, null, "parent is not a directory");
+        }
         return target;
     }
 
@@ -76,6 +86,25 @@ public class WorkspacePathGuard {
     public String canonicalKey(Path root) {
         String value = root.toAbsolutePath().normalize().toString();
         return isWindows() ? value.toLowerCase(Locale.ROOT) : value;
+    }
+
+    private Path resolveRelative(Path root, String relativePath) {
+        final Path supplied;
+        try {
+            supplied = Path.of(relativePath == null ? "" : relativePath);
+        } catch (InvalidPathException exception) {
+            throw new IllegalArgumentException("workspace path is invalid", exception);
+        }
+        if (supplied.isAbsolute()) throw new IllegalArgumentException("workspace path must be relative");
+        for (Path segment : supplied) {
+            if ("..".equals(segment.toString())) {
+                throw new IllegalArgumentException("workspace path cannot contain parent traversal");
+            }
+        }
+
+        Path target = root.resolve(supplied).normalize();
+        if (!inside(root, target)) throw new IllegalArgumentException("workspace path leaves the workspace");
+        return target;
     }
 
     private boolean inside(Path root, Path target) {

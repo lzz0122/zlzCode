@@ -34,11 +34,17 @@ public class ReadService implements ToolHandler {
     private final ObjectMapper objectMapper;
     private final WorkspacePathGuard pathGuard;
     private final ToolProperties properties;
+    private final RunFileObservationService observationService;
 
-    public ReadService(ObjectMapper objectMapper, WorkspacePathGuard pathGuard, ToolProperties properties) {
+    public ReadService(
+            ObjectMapper objectMapper,
+            WorkspacePathGuard pathGuard,
+            ToolProperties properties,
+            RunFileObservationService observationService) {
         this.objectMapper = objectMapper;
         this.pathGuard = pathGuard;
         this.properties = properties;
+        this.observationService = observationService;
     }
 
     /*
@@ -66,7 +72,8 @@ public class ReadService implements ToolHandler {
                 return failure("FILE_TOO_LARGE", "文件超过读取上限", "The requested file is too large to read.");
             }
 
-            String text = decode(Files.readAllBytes(file));
+            byte[] bytes = Files.readAllBytes(file);
+            String text = decode(bytes);
             List<String> lines = text.lines().toList();
             int startIndex = Math.min(arguments.offset() - 1, lines.size());
             int endIndex = Math.min(startIndex + arguments.limit(), lines.size());
@@ -87,7 +94,9 @@ public class ReadService implements ToolHandler {
             String relative = pathGuard.relativePath(context.workspace().root(), file);
             ReadResult result = fit(new ReadResult(true, relative, startLine, endLine,
                     lines.size(), content, truncated), limits.maxResultChars());
-            return new ToolOutcome(true, encode(result), presentation(result));
+            ToolOutcome outcome = new ToolOutcome(true, encode(result), presentation(result));
+            observationService.record(context, relative, bytes);
+            return outcome;
         } catch (NoSuchFileException exception) {
             return failure("PATH_NOT_FOUND", "文件不存在", "The requested file does not exist.");
         } catch (CharacterCodingException exception) {

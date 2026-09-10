@@ -18,6 +18,7 @@ import com.zlzcode.codeagent.tool.model.MutationPlan;
 import com.zlzcode.codeagent.tool.model.ToolExecutionContext;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
+import com.zlzcode.codeagent.tool.service.RunFileObservationService;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +55,7 @@ final class AgentRunExecutor {
     private final RunStore runStore;
     private final AgentRunScheduler scheduler;
     private final AgentReActLoop reActLoop;
+    private final RunFileObservationService observationService;
 
     @Value("${codeagent.run.timeout:PT5M}")
     private Duration runTimeout;
@@ -70,7 +72,8 @@ final class AgentRunExecutor {
             SessionService sessionService,
             RunStore runStore,
             AgentRunScheduler scheduler,
-            AgentReActLoop reActLoop) {
+            AgentReActLoop reActLoop,
+            RunFileObservationService observationService) {
         this.workspaceRegistry = workspaceRegistry;
         this.objectMapper = objectMapper;
         this.toolRegistry = toolRegistry;
@@ -81,6 +84,7 @@ final class AgentRunExecutor {
         this.runStore = runStore;
         this.scheduler = scheduler;
         this.reActLoop = reActLoop;
+        this.observationService = observationService;
     }
 
     /*
@@ -368,6 +372,12 @@ final class AgentRunExecutor {
                     active.runId, active.sessionId, inspectionError);
             active.emitTerminal(GENERIC_FAILURE);
         }
+        /*
+         * 背景：观察文件版本只授权当前 Run 后续的覆盖或编辑，Run 终结后已没有合法消费者。
+         * 设计意图：由拥有 Run 生命周期的 Executor 统一清理，而不是让单个工具猜测最后一次调用。
+         * 关键约束：不能保留到 Session 或后续 Run；否则旧读取可能错误授权新的文件修改。
+         */
+        observationService.clear(active.runId);
         active.events.tryEmitComplete();
         activeRuns.remove(active.runId, active);
     }
