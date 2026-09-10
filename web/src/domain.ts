@@ -197,26 +197,48 @@ export function applyAgentEvent(message: Message, event: AgentEvent): Message {
     case 'status':
       return { ...message, statusLabel: event.label }
     case 'tool_confirmation_required':
+      /*
+       * 背景：后端先发送 tool_started，再进入 SSE 静默的 WAITING_APPROVAL，审批快照随后由 Run 查询发现。
+       * 设计意图：按同一 toolCallId 原地升级已有工具卡，保留开始事件提供的上下文，而不是追加重复卡片。
+       * 关键约束：不能让 running 卡片与审批卡片并存；否则用户批准后只有其中一张能被 tool_finished 正确收口。
+       */
       return {
         ...message,
-        statusLabel: '等待确认文件变更',
-        tools: [
-          ...(message.tools ?? []),
-          {
-            id: event.id,
-            label: event.label,
-            state: 'awaiting_confirmation',
-            confirmation: {
-              id: event.confirmationId,
-              operation: event.operation,
-              path: event.path,
-              summary: event.summary,
-              diff: event.diff,
-              expiresAt: event.expiresAt,
-              submitting: false,
-            },
-          },
-        ],
+        statusLabel: '等待审批文件变更',
+        tools: (message.tools ?? []).some(tool => tool.id === event.id)
+          ? (message.tools ?? []).map(tool => tool.id === event.id
+              ? {
+                  ...tool,
+                  label: event.label,
+                  state: 'awaiting_confirmation',
+                  confirmation: {
+                    id: event.confirmationId,
+                    operation: event.operation,
+                    path: event.path,
+                    summary: event.summary,
+                    diff: event.diff,
+                    expiresAt: event.expiresAt,
+                    submitting: false,
+                  },
+                }
+              : tool)
+          : [
+              ...(message.tools ?? []),
+              {
+                id: event.id,
+                label: event.label,
+                state: 'awaiting_confirmation',
+                confirmation: {
+                  id: event.confirmationId,
+                  operation: event.operation,
+                  path: event.path,
+                  summary: event.summary,
+                  diff: event.diff,
+                  expiresAt: event.expiresAt,
+                  submitting: false,
+                },
+              },
+            ],
       }
     case 'tool_started':
       return {

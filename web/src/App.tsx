@@ -434,7 +434,12 @@ export default function App() {
       submitting: true,
     })
     try {
-      await gateway.decideConfirmation(owner.runId, confirmationId, decision)
+      await gateway.decideConfirmation(
+        owner.runId,
+        owner.sessionId,
+        confirmationId,
+        decision,
+      )
     } catch (error) {
       dispatch({
         type: 'run/confirmation-state',
