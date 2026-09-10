@@ -113,7 +113,11 @@ final class AgentReActLoop {
      */
     private ModelTurnOutcome classifyModelTurn(ReActContext context, LlmTurnResult result) {
         if (result.hasToolCalls()) {
-            if (result.toolCalls().size() != 1 || !context.canExecuteTool()) {
+            if (result.toolCalls().size() > 1) {
+                return new ModelTurnOutcome.InvalidResponse(
+                        OpenAiIntegrationException.multipleToolCallsUnsupported());
+            }
+            if (!context.canExecuteTool()) {
                 return new ModelTurnOutcome.InvalidResponse(OpenAiIntegrationException.invalidToolCall());
             }
             return new ModelTurnOutcome.ToolRequested(result.toolCalls().getFirst());
