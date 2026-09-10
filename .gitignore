@@ -47,6 +47,8 @@ htmlcov/
 .cache/
 tmp/
 temp/
+.obsidian
+runs
 
 # Local runtime state
 /sessions/

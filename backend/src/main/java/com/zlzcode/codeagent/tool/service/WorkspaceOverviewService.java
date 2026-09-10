@@ -3,9 +3,11 @@ package com.zlzcode.codeagent.tool.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zlzcode.codeagent.tool.handler.ToolHandler;
+import com.zlzcode.codeagent.tool.model.ToolCompleted;
+import com.zlzcode.codeagent.tool.model.ToolExecutionContext;
+import com.zlzcode.codeagent.tool.model.ToolExecutionResult;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.workspace.security.WorkspacePathGuard;
-import com.zlzcode.codeagent.workspace.model.AuthorizedWorkspace;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Value;
 import reactor.core.publisher.Mono;
@@ -43,18 +45,19 @@ public class WorkspaceOverviewService implements ToolHandler {
     /*
      * 背景：工作区扫描使用阻塞式文件系统 API，不能直接占用 WebFlux 的事件线程。
      * 设计意图：工具服务同时作为 Handler，统一负责调度、超时和扫描结果收口，避免增加仅转发的适配类。
-     * 关键约束：扫描必须运行在 boundedElastic 且保留两秒超时，否则单次慢目录会阻塞其他 Agent 请求。
+     * 关键约束：扫描必须运行在 boundedElastic 且保留配置的执行超时，否则单次慢目录会阻塞其他 Agent 请求。
      */
     @Override
-    public Mono<ToolOutcome> execute(AuthorizedWorkspace workspace, String arguments) {
-        return Mono.fromCallable(() -> scan(workspace.root()))
+    public Mono<ToolExecutionResult> execute(ToolExecutionContext context, String arguments) {
+        return Mono.<ToolExecutionResult>fromCallable(
+                        () -> new ToolCompleted(scan(context.workspace().root())))
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(executionTimeout)
-                .onErrorReturn(ToolOutcome.failure(
+                .onErrorReturn(new ToolCompleted(ToolOutcome.failure(
                         objectMapper,
                         "TOOL_TIMEOUT",
                         "读取工作区超时",
-                        "The selected workspace could not be listed safely."));
+                        "The selected workspace could not be listed safely.")));
     }
 
     private ToolOutcome scan(Path workspaceRoot) {

@@ -8,10 +8,12 @@ import com.zlzcode.codeagent.workspace.exception.WorkspaceRegistryException;
 import com.zlzcode.codeagent.openai.exception.OpenAiIntegrationException;
 import com.zlzcode.codeagent.session.exception.SessionException;
 import com.zlzcode.codeagent.agent.exception.RunException;
+import com.zlzcode.codeagent.agent.exception.ApprovalException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import org.springframework.web.server.ServerWebInputException;
 
@@ -20,6 +22,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(WebExchangeBindException.class)
     public ResponseEntity<ApiErrorResponse> handleValidation(WebExchangeBindException exception) {
+        return response(HttpStatus.UNPROCESSABLE_ENTITY,
+                "INVALID_REQUEST", "请求结构无效", false);
+    }
+
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodValidation(
+            HandlerMethodValidationException exception) {
         return response(HttpStatus.UNPROCESSABLE_ENTITY,
                 "INVALID_REQUEST", "请求结构无效", false);
     }
@@ -75,6 +84,18 @@ public class ApiExceptionHandler {
         HttpStatus status = switch (exception.code()) {
             case RunException.NOT_FOUND_CODE -> HttpStatus.NOT_FOUND;
             case RunException.IDEMPOTENCY_CONFLICT_CODE -> HttpStatus.CONFLICT;
+            default -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+        return response(status, exception.code(), exception.getMessage(), exception.retryable());
+    }
+
+    @ExceptionHandler(ApprovalException.class)
+    public ResponseEntity<ApiErrorResponse> handleApproval(ApprovalException exception) {
+        HttpStatus status = switch (exception.code()) {
+            case ApprovalException.NOT_FOUND_CODE -> HttpStatus.NOT_FOUND;
+            case ApprovalException.STATE_CONFLICT_CODE,
+                    ApprovalException.EXPIRED_CODE -> HttpStatus.CONFLICT;
+            case ApprovalException.PERSISTENCE_FAILED_CODE -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
         return response(status, exception.code(), exception.getMessage(), exception.retryable());

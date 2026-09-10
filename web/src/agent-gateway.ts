@@ -37,6 +37,11 @@ interface ModelListResponse {
   models: unknown
 }
 
+interface RunResponse {
+  runId: unknown
+  sessionId: unknown
+}
+
 type JsonRecord = Record<string, unknown>
 
 function jsonRecord(value: unknown): JsonRecord | undefined {
@@ -284,7 +289,7 @@ export class HttpAgentGateway implements AgentGateway {
     const response = await apiFetch(this.endpoint('/api/agent/runs'), {
       method: 'POST',
       headers: {
-        Accept: 'text/event-stream',
+        Accept: 'application/json',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
@@ -294,7 +299,22 @@ export class HttpAgentGateway implements AgentGateway {
     if (!response.ok) {
       throw await apiError(response, 'Agent API 请求')
     }
-    for await (const event of parseAgentEventStream(response)) yield event
+    const payload = await response.json() as RunResponse
+    if (typeof payload.runId !== 'string' || payload.runId.length === 0
+      || payload.sessionId !== request.sessionId) {
+      throw new AgentGatewayError('Agent API 请求失败：Java 后端返回了无效运行结构', {
+        code: 'RUN_RESPONSE_INVALID',
+        retryable: false,
+      })
+    }
+
+    const eventsResponse = await apiFetch(
+      this.endpoint(`/api/agent/runs/${encodeURIComponent(payload.runId)}/events?sessionId=${encodeURIComponent(request.sessionId)}`),
+      { method: 'GET', headers: { Accept: 'text/event-stream' }, signal },
+      'Agent 事件流请求',
+    )
+    if (!eventsResponse.ok) throw await apiError(eventsResponse, 'Agent 事件流请求')
+    for await (const event of parseAgentEventStream(eventsResponse)) yield event
   }
 
   async decideConfirmation(
