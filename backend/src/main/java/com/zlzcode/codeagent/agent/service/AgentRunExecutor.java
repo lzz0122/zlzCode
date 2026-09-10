@@ -19,6 +19,8 @@ import com.zlzcode.codeagent.tool.model.ToolExecutionContext;
 import com.zlzcode.codeagent.tool.model.ToolOutcome;
 import com.zlzcode.codeagent.tool.registry.ToolRegistry;
 import com.zlzcode.codeagent.workspace.service.WorkspaceRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -35,6 +37,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 final class AgentRunExecutor {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentRunExecutor.class);
+    private static final AgentEvent.Error GENERIC_FAILURE =
+            new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false);
+    private static final AgentEvent.Error ORPHANED_RUN_FAILURE =
+            new AgentEvent.Error("Agent 运行状态已丢失，请重新发起任务", "AGENT_RUN_UNAVAILABLE", true);
 
     private final WorkspaceRegistry workspaceRegistry;
     private final ObjectMapper objectMapper;
@@ -81,7 +89,7 @@ final class AgentRunExecutor {
      * 关键约束：不能等任务真正开始后再创建事件通道，否则排队窗口会被错误地当成空流。
      */
     void start(RunExecution execution) {
-        ActiveRun active = new ActiveRun(execution.runId());
+        ActiveRun active = new ActiveRun(execution.sessionId(), execution.runId());
         if (activeRuns.putIfAbsent(execution.runId(), active) != null) {
             throw new IllegalStateException("Run is already active: " + execution.runId());
         }
@@ -108,6 +116,8 @@ final class AgentRunExecutor {
      */
     private Mono<Void> execute(RunExecution execution, ActiveRun active) {
         return Mono.defer(() -> {
+                    LOGGER.info("Agent Run started: runId={}, sessionId={}",
+                            execution.runId(), execution.sessionId());
                     SessionRunSnapshot sessionRun = sessionService.refreshRun(
                             execution.sessionId(), execution.runId(), execution.prompt());
                     active.emit(new AgentEvent.RunStarted(execution.runId()));
@@ -244,7 +254,10 @@ final class AgentRunExecutor {
                         progress.approvalId,
                         "Run 在提交前终止");
             }
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException exception) {
+            LOGGER.error(
+                    "Agent approval cleanup failed: runId={}, sessionId={}, approvalId={}",
+                    progress.runId, progress.sessionId, progress.approvalId, exception);
         }
     }
 
@@ -263,8 +276,11 @@ final class AgentRunExecutor {
                         completion.finalAnswer(),
                         completion.sessionToolHistory(),
                         completion.metrics()))
-                .then(Mono.fromRunnable(() -> active.emit(new AgentEvent.Completed(
-                        completion.metrics(), completion.toolHistory()))));
+                .then(Mono.<Void>fromRunnable(() -> active.emitTerminal(new AgentEvent.Completed(
+                        completion.metrics(), completion.toolHistory()))))
+                .doOnSuccess(ignored -> LOGGER.info(
+                        "Agent Run succeeded: runId={}, sessionId={}",
+                        execution.runId(), execution.sessionId()));
     }
 
     Flux<AgentEvent> events(String sessionId, String runId) {
@@ -287,6 +303,13 @@ final class AgentRunExecutor {
                     record.errorCode(),
                     Boolean.TRUE.equals(record.errorRetryable())));
         }
+        if (active == null && (record.status() == RunStatus.RUNNING
+                || record.status() == RunStatus.WAITING_APPROVAL)) {
+            LOGGER.error(
+                    "Agent Run has no active executor: runId={}, sessionId={}, status={}",
+                    record.runId(), record.sessionId(), record.status());
+            return Flux.just(ORPHANED_RUN_FAILURE);
+        }
         return Flux.empty();
     }
 
@@ -297,33 +320,89 @@ final class AgentRunExecutor {
      */
     private void fail(ActiveRun active, Throwable error) {
         AgentEvent.Error event = exceptionMapper.mapException(error)
-                .onErrorReturn(new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false))
+                .onErrorReturn(GENERIC_FAILURE)
                 .block(Duration.ofSeconds(1));
-        if (event == null) event = new AgentEvent.Error("Agent 运行失败", "AGENT_RUN_FAILED", false);
+        if (event == null) event = GENERIC_FAILURE;
+        active.rememberFailure(event);
+        LOGGER.error(
+                "Agent Run failed: runId={}, sessionId={}, code={}",
+                active.runId, active.sessionId, event.code(), error);
         try {
             runStore.fail(active.runId, event.code(), event.message(), event.retryable());
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException persistenceError) {
+            LOGGER.error(
+                    "Agent Run failure persistence failed: runId={}, sessionId={}, code={}",
+                    active.runId, active.sessionId, event.code(), persistenceError);
         }
-        active.emit(event);
+        active.emitTerminal(event);
     }
 
+    /*
+     * 背景：执行流可能已经结束，但失败状态持久化本身也可能异常，旧实现会直接删除 ActiveRun 并留下无法解释的 RUNNING 记录。
+     * 设计意图：在释放事件通道前检查持久化终态，发现未收口时只补做一次失败写入并记录诊断日志。
+     * 关键约束：这里不能循环重试或恢复业务执行；否则持久化故障会阻塞调度器，修改工具也可能被错误地再次执行。
+     */
     private void finish(ActiveRun active) {
+        try {
+            RunRecord record = runStore.read(active.sessionId, active.runId);
+            if (record.status() != RunStatus.SUCCEEDED && record.status() != RunStatus.FAILED) {
+                AgentEvent.Error event = active.failureEvent == null
+                        ? GENERIC_FAILURE
+                        : active.failureEvent;
+                LOGGER.error(
+                        "Agent Run reached executor finish without terminal status: "
+                                + "runId={}, sessionId={}, status={}, code={}",
+                        active.runId, active.sessionId, record.status(), event.code());
+                try {
+                    runStore.fail(active.runId, event.code(), event.message(), event.retryable());
+                } catch (RuntimeException persistenceError) {
+                    LOGGER.error(
+                            "Agent Run terminal repair failed: runId={}, sessionId={}, code={}",
+                            active.runId, active.sessionId, event.code(), persistenceError);
+                }
+                active.emitTerminal(event);
+            }
+        } catch (RuntimeException inspectionError) {
+            LOGGER.error(
+                    "Agent Run terminal inspection failed: runId={}, sessionId={}",
+                    active.runId, active.sessionId, inspectionError);
+            active.emitTerminal(GENERIC_FAILURE);
+        }
         active.events.tryEmitComplete();
         activeRuns.remove(active.runId, active);
     }
 
     private static final class ActiveRun {
+        private final String sessionId;
         private final String runId;
         private final Sinks.Many<AgentEvent> events =
                 Sinks.many().multicast().onBackpressureBuffer();
+        private final AtomicBoolean terminalEventEmitted = new AtomicBoolean();
         private volatile ApprovalProgress approvalProgress;
+        private volatile AgentEvent.Error failureEvent;
 
-        private ActiveRun(String runId) {
+        private ActiveRun(String sessionId, String runId) {
+            this.sessionId = sessionId;
             this.runId = runId;
         }
 
         private void emit(AgentEvent event) {
-            events.tryEmitNext(event);
+            Sinks.EmitResult result = events.tryEmitNext(event);
+            if (result.isFailure() && result != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
+                LOGGER.warn(
+                        "Agent event delivery failed: runId={}, sessionId={}, type={}, result={}",
+                        runId, sessionId, event.type(), result);
+            }
+        }
+
+        private void emitTerminal(AgentEvent event) {
+            if (terminalEventEmitted.compareAndSet(false, true)) {
+                emit(event);
+            }
+        }
+
+        private void rememberFailure(AgentEvent.Error event) {
+            failureEvent = event;
         }
 
         private synchronized void beginApproval(ApprovalRecord approval) {

@@ -43,6 +43,7 @@ htmlcov/
 
 # Logs and caches
 *.log
+/logs/
 *.cache
 .cache/
 tmp/

@@ -7,6 +7,8 @@ import java.util.concurrent.TimeoutException;
 public class OpenAiIntegrationException extends RuntimeException {
 
     private static final String CODE_RESPONSE_INVALID = "LLM_RESPONSE_INVALID";
+    private static final String CODE_MULTIPLE_TOOL_CALLS_UNSUPPORTED =
+            "LLM_MULTIPLE_TOOL_CALLS_UNSUPPORTED";
     private static final String CODE_STREAM_BROKEN = "LLM_STREAM_BROKEN";
     private static final String CODE_TIMEOUT = "LLM_TIMEOUT";
     private static final String CODE_CONNECTION_FAILED = "LLM_CONNECTION_FAILED";
@@ -77,6 +79,10 @@ public class OpenAiIntegrationException extends RuntimeException {
 
     public static OpenAiIntegrationException invalidToolCall() {
         return error(ErrorDefinition.INVALID_TOOL_CALL);
+    }
+
+    public static OpenAiIntegrationException multipleToolCallsUnsupported() {
+        return error(ErrorDefinition.MULTIPLE_TOOL_CALLS_UNSUPPORTED);
     }
 
     public static OpenAiIntegrationException streamBroken() {
@@ -182,6 +188,11 @@ public class OpenAiIntegrationException extends RuntimeException {
         INVALID_USAGE(CODE_RESPONSE_INVALID, null, "模型返回了无效的用量信息", false),
         NO_DISPLAYABLE_RESPONSE(CODE_RESPONSE_INVALID, null, "模型没有返回可显示文本或工具调用", false),
         INVALID_TOOL_CALL(CODE_RESPONSE_INVALID, null, "模型返回了无效的工具调用", false),
+        MULTIPLE_TOOL_CALLS_UNSUPPORTED(
+                CODE_MULTIPLE_TOOL_CALLS_UNSUPPORTED,
+                null,
+                "当前版本暂不支持模型在同一轮调用多个工具",
+                false),
         STREAM_BROKEN(CODE_STREAM_BROKEN, null, "OpenAI 流式响应意外中断", true),
         FINAL_TEXT_MISSING(CODE_RESPONSE_INVALID, null, "模型没有返回最终文本", false),
         TIMEOUT(CODE_TIMEOUT, null, "OpenAI 请求超时", true),

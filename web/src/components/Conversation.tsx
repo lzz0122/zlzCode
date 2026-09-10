@@ -160,6 +160,14 @@ function AssistantMessage({
             <AssistantMarkdown content={message.content} />
           </div>
         )}
+        {message.state === 'error' && (message.errorCode || message.errorRetryable !== undefined) && (
+          <div className="messageMetrics">
+            {message.errorCode && <code>{message.errorCode}</code>}
+            {message.errorRetryable !== undefined && (
+              <span>{message.errorRetryable ? '可重新发起' : '不建议直接重试'}</span>
+            )}
+          </div>
+        )}
         {message.metrics && (
           <div className="messageMetrics">
             <span><Route size={13} /> {message.metrics.steps} 步</span>
