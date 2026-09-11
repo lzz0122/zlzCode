@@ -61,18 +61,18 @@ final class AgentReActLoop {
                     .map(result -> state.withModelResult(RunPhase.MODEL_RESULT_READY, result));
             case MODEL_RESULT_READY -> handleModelTurn(state);
             case TOOL_READY -> executeToolCall(state, approvalCoordinator);
-            case TOOL_RESULT_READY -> Mono.just(state.transitionTo(RunPhase.REQUEST_MODEL));
+            case TOOL_RESULT_READY -> Mono.just(advanceToolBatch(state));
             case ANSWER_READY -> Mono.empty();
         };
     }
 
     private Mono<LlmTurnResult> collectModelTurn(ReActContext context) {
-        List<LlmRequest.ToolDeclaration> tools = context.canExecuteTool()
-                ? toolRegistry.modelToolDeclarations()
-                : List.of();
         return turnStreamProcessor.collect(openAiChatClient.chat(
                 context.execution().options().openai(),
-                buildLlmRequest(context, context.messagesSnapshot(), tools)));
+                buildLlmRequest(
+                        context,
+                        context.messagesSnapshot(),
+                        toolRegistry.modelToolDeclarations())));
     }
 
     /*
@@ -84,7 +84,7 @@ final class AgentReActLoop {
         ReActContext context = state.context();
         LlmTurnResult result = state.modelTurnResult();
         context.recordModelTurn(result);
-        ModelTurnOutcome decision = classifyModelTurn(context, result);
+        ModelTurnOutcome decision = classifyModelTurn(result);
         if (decision instanceof ModelTurnOutcome.InvalidResponse invalid) {
             return Mono.error(invalid.error());
         }
@@ -96,36 +96,52 @@ final class AgentReActLoop {
         }
 
         ModelTurnOutcome.ToolRequested execute = (ModelTurnOutcome.ToolRequested) decision;
-        LlmToolCall call = execute.call();
+        List<LlmToolCall> calls = execute.calls();
         context.appendAssistantToolCalls(
-                result.content(), result.hiddenReasoning(), List.of(call));
+                result.content(), result.hiddenReasoning(), calls);
+        LlmToolCall firstCall = calls.getFirst();
         return Mono.just(state.withPendingTool(
                 RunPhase.TOOL_READY,
-                call,
+                calls,
+                0,
                 List.of(new AgentEvent.ToolStarted(
-                        call.id(), toolRegistry.displayName(call.name()), null))));
+                        firstCall.id(), toolRegistry.displayName(firstCall.name()), null))));
     }
 
     /*
-     * 背景：工具额度和工具注册状态是模型进入本机执行边界前的最后校验。
-     * 设计意图：已注册工具的业务失败交给下一轮模型修正，协议非法或额度耗尽则终止 Run。
-     * 关键约束：当前实现每轮最多接受一个工具调用；多工具调用协议另行设计，不能在此次结构重构中改变。
+     * 背景：模型可以在同一 Assistant Turn 中返回一组相互独立的工具调用。
+     * 设计意图：完整接收模型原始顺序，由 ReAct 状态机串行执行，不额外引入调用额度策略。
+     * 关键约束：整组调用必须登记在同一条 AssistantToolCalls 消息中，不能截取首项或在结果未齐时请求下一轮模型，否则历史会出现悬空 call ID。
      */
-    private ModelTurnOutcome classifyModelTurn(ReActContext context, LlmTurnResult result) {
+    private ModelTurnOutcome classifyModelTurn(LlmTurnResult result) {
         if (result.hasToolCalls()) {
-            if (result.toolCalls().size() > 1) {
-                return new ModelTurnOutcome.InvalidResponse(
-                        OpenAiIntegrationException.multipleToolCallsUnsupported());
-            }
-            if (!context.canExecuteTool()) {
-                return new ModelTurnOutcome.InvalidResponse(OpenAiIntegrationException.invalidToolCall());
-            }
-            return new ModelTurnOutcome.ToolRequested(result.toolCalls().getFirst());
+            return new ModelTurnOutcome.ToolRequested(result.toolCalls());
         }
         if (result.content() == null || result.content().isBlank()) {
             return new ModelTurnOutcome.InvalidResponse(OpenAiIntegrationException.noDisplayableResponse());
         }
         return new ModelTurnOutcome.AnswerReady(result.content());
+    }
+
+    /*
+     * 背景：同一模型 Turn 的工具结果必须全部补齐，下一轮模型请求才能获得合法消息历史。
+     * 设计意图：当前调用收口后只推进一个索引；仍有调用时启动下一项，整组完成后才回到模型。
+     * 关键约束：索引只能在最终 ToolOutcome 已写入 Context 后递增；若在审批决定或工具启动时提前推进，会造成重复提交、结果错配或越过尚未完成的调用。
+     */
+    private RunLoopState advanceToolBatch(RunLoopState state) {
+        int nextIndex = state.activeToolIndex() + 1;
+        if (nextIndex < state.toolCalls().size()) {
+            LlmToolCall nextCall = state.toolCalls().get(nextIndex);
+            return state.withPendingTool(
+                    RunPhase.TOOL_READY,
+                    state.toolCalls(),
+                    nextIndex,
+                    List.of(new AgentEvent.ToolStarted(
+                            nextCall.id(), toolRegistry.displayName(nextCall.name()), null)));
+        }
+        return state.withEvents(
+                RunPhase.REQUEST_MODEL,
+                List.of(new AgentEvent.Status("正在整理结果")));
     }
 
     /*
@@ -136,12 +152,13 @@ final class AgentReActLoop {
     private Publisher<? extends RunLoopState> executeToolCall(
             RunLoopState state,
             ToolApprovalCoordinator approvalCoordinator) {
+        LlmToolCall call = state.activeToolCall();
         ToolExecutionContext executionContext = new ToolExecutionContext(
                 state.context().execution().runId(),
-                state.toolCall().id(),
+                call.id(),
                 state.context().workspace());
         return toolRegistry.execute(
-                        state.toolCall().name(), executionContext, state.toolCall().arguments())
+                        call.name(), executionContext, call.arguments())
                 .flatMap(result -> {
                     if (result instanceof ToolCompleted completed) {
                         return Mono.just(completed.outcome());
@@ -151,15 +168,13 @@ final class AgentReActLoop {
                             approvalCoordinator.awaitOutcome(executionContext, approval.plan()));
                 })
                 .map(outcome -> {
-                    state.context().recordToolExecution(state.toolCall(), outcome);
+                    state.context().recordToolExecution(call, outcome);
                     return state.withToolOutcomeEvents(
                             RunPhase.TOOL_RESULT_READY,
-                            List.of(
-                                    new AgentEvent.ToolFinished(
-                                            state.toolCall().id(),
-                                            outcome.ok() ? "completed" : "failed",
-                                            outcome.presentation()),
-                                    new AgentEvent.Status("正在整理结果")));
+                            List.of(new AgentEvent.ToolFinished(
+                                    call.id(),
+                                    outcome.ok() ? "completed" : "failed",
+                                    outcome.presentation())));
                 });
     }
 
@@ -201,7 +216,11 @@ final class AgentReActLoop {
             permits ModelTurnOutcome.ToolRequested, ModelTurnOutcome.AnswerReady,
             ModelTurnOutcome.InvalidResponse {
 
-        record ToolRequested(LlmToolCall call) implements ModelTurnOutcome {
+        record ToolRequested(List<LlmToolCall> calls) implements ModelTurnOutcome {
+
+            public ToolRequested {
+                calls = List.copyOf(calls);
+            }
         }
 
         record AnswerReady(String content) implements ModelTurnOutcome {
@@ -215,7 +234,8 @@ final class AgentReActLoop {
             ReActContext context,
             RunPhase phase,
             LlmTurnResult modelTurnResult,
-            LlmToolCall toolCall,
+            List<LlmToolCall> toolCalls,
+            int activeToolIndex,
             List<AgentEvent> pendingEvents) {
 
         /*
@@ -224,6 +244,7 @@ final class AgentReActLoop {
          * 关键约束：新增 phase 时必须同步定义其必需字段和唯一转移，不能直接读取其他阶段的可空数据。
          */
         private RunLoopState {
+            toolCalls = List.copyOf(toolCalls);
             pendingEvents = List.copyOf(pendingEvents);
         }
 
@@ -232,33 +253,44 @@ final class AgentReActLoop {
                     context,
                     RunPhase.INITIAL,
                     null,
-                    null,
+                    List.of(),
+                    0,
                     List.of());
         }
 
         private RunLoopState transitionTo(RunPhase nextPhase) {
-            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, List.of());
+            return new RunLoopState(
+                    context, nextPhase, modelTurnResult, toolCalls, activeToolIndex, List.of());
         }
 
         private RunLoopState withModelResult(RunPhase nextPhase, LlmTurnResult nextResult) {
-            return new RunLoopState(context, nextPhase, nextResult, null, List.of());
+            return new RunLoopState(context, nextPhase, nextResult, List.of(), 0, List.of());
         }
 
         private RunLoopState withEvents(RunPhase nextPhase, List<AgentEvent> nextEvents) {
-            return new RunLoopState(context, nextPhase, modelTurnResult, toolCall, nextEvents);
+            return new RunLoopState(
+                    context, nextPhase, modelTurnResult, toolCalls, activeToolIndex, nextEvents);
         }
 
         private RunLoopState withPendingTool(
                 RunPhase nextPhase,
-                LlmToolCall nextCall,
+                List<LlmToolCall> nextCalls,
+                int nextToolIndex,
                 List<AgentEvent> nextEvents) {
             return new RunLoopState(
-                    context, nextPhase, modelTurnResult, nextCall, nextEvents);
+                    context, nextPhase, modelTurnResult, nextCalls, nextToolIndex, nextEvents);
         }
 
         private RunLoopState withToolOutcomeEvents(RunPhase nextPhase, List<AgentEvent> nextEvents) {
             return new RunLoopState(
-                    context, nextPhase, modelTurnResult, toolCall, nextEvents);
+                    context, nextPhase, modelTurnResult, toolCalls, activeToolIndex, nextEvents);
+        }
+
+        private LlmToolCall activeToolCall() {
+            if (toolCalls.isEmpty() || activeToolIndex < 0 || activeToolIndex >= toolCalls.size()) {
+                throw new IllegalStateException("Run loop has no active tool call");
+            }
+            return toolCalls.get(activeToolIndex);
         }
     }
 }

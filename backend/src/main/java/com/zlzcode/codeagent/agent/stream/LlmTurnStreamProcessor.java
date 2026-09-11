@@ -8,9 +8,9 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 将一轮 LLM 增量事件收口为完整结果，供 Agent 根据实际结果推进流程。
@@ -29,7 +29,7 @@ public final class LlmTurnStreamProcessor {
 
         private final StringBuilder content = new StringBuilder();
         private final StringBuilder hiddenReasoning = new StringBuilder();
-        private final Map<Integer, ToolCallState> toolCalls = new LinkedHashMap<>();
+        private final Map<Integer, ToolCallState> toolCalls = new TreeMap<>();
         private Integer inputTokens;
         private Integer outputTokens;
         private LlmStreamEvent.StopReason stopReason;
