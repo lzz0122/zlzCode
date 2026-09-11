@@ -1,13 +1,19 @@
 package com.zlzcode.codeagent.tool.config;
 
+import com.zlzcode.codeagent.tool.definition.EditToolDefinition;
 import com.zlzcode.codeagent.tool.definition.GlobToolDefinition;
 import com.zlzcode.codeagent.tool.definition.GrepToolDefinition;
+import com.zlzcode.codeagent.tool.definition.MkdirToolDefinition;
+import com.zlzcode.codeagent.tool.definition.MoveToolDefinition;
 import com.zlzcode.codeagent.tool.definition.ReadToolDefinition;
 import com.zlzcode.codeagent.tool.definition.WorkspaceOverviewToolDefinition;
 import com.zlzcode.codeagent.tool.definition.WriteToolDefinition;
 import com.zlzcode.codeagent.tool.registry.ToolRegistration;
+import com.zlzcode.codeagent.tool.service.EditService;
 import com.zlzcode.codeagent.tool.service.GlobService;
 import com.zlzcode.codeagent.tool.service.GrepService;
+import com.zlzcode.codeagent.tool.service.MkdirService;
+import com.zlzcode.codeagent.tool.service.MoveService;
 import com.zlzcode.codeagent.tool.service.ReadService;
 import com.zlzcode.codeagent.tool.service.WorkspaceOverviewService;
 import com.zlzcode.codeagent.tool.service.WriteService;
@@ -36,6 +42,21 @@ public class ToolConfiguration {
 
     @Bean
     ToolRegistration writeRegistration(WriteToolDefinition definition, WriteService handler) {
+        return new ToolRegistration(definition, handler, true);
+    }
+
+    @Bean
+    ToolRegistration editRegistration(EditToolDefinition definition, EditService handler) {
+        return new ToolRegistration(definition, handler, true);
+    }
+
+    @Bean
+    ToolRegistration mkdirRegistration(MkdirToolDefinition definition, MkdirService handler) {
+        return new ToolRegistration(definition, handler, true);
+    }
+
+    @Bean
+    ToolRegistration moveRegistration(MoveToolDefinition definition, MoveService handler) {
         return new ToolRegistration(definition, handler, true);
     }
 
