@@ -1,8 +1,5 @@
 import {
   applyAgentEvent,
-  DEFAULT_TOOL_CALLS_PER_RUN,
-  MAX_TOOL_CALLS_PER_RUN,
-  MIN_TOOL_CALLS_PER_RUN,
   normalizeOpenAIModels,
   settleRunningTools,
   type AgentEvent,
@@ -37,7 +34,6 @@ export const initialState: AppState = {
     models: [],
     model: '',
     reasoningEffort: '',
-    maxToolCalls: DEFAULT_TOOL_CALLS_PER_RUN,
   },
 }
 
@@ -66,7 +62,6 @@ export type AppAction =
   | { type: 'settings/openai-model'; model: string }
   | { type: 'settings/openai-model-remove'; modelId: string }
   | { type: 'settings/openai-reasoning'; reasoningEffort: string }
-  | { type: 'settings/max-tool-calls'; maxToolCalls: number }
   | { type: 'state/reset' }
 
 function withSelectedModel(settings: OpenAIPublicSettings, requestedModel: string): OpenAIPublicSettings {
@@ -211,7 +206,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           models: [],
           model: '',
           reasoningEffort: '',
-          maxToolCalls: state.openai.maxToolCalls,
         },
       }
     case 'settings/openai-models': {
@@ -255,16 +249,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         openai: { ...state.openai, reasoningEffort: action.reasoningEffort },
       }
     }
-    case 'settings/max-tool-calls':
-      if (
-        !Number.isInteger(action.maxToolCalls)
-        || action.maxToolCalls < MIN_TOOL_CALLS_PER_RUN
-        || action.maxToolCalls > MAX_TOOL_CALLS_PER_RUN
-      ) return state
-      return {
-        ...state,
-        openai: { ...state.openai, maxToolCalls: action.maxToolCalls },
-      }
     case 'state/reset':
       return initialState
   }
@@ -283,12 +267,6 @@ function toOpenAIPublicSettings(value: unknown): OpenAIPublicSettings {
   const reasoningEffort = typeof candidate.reasoningEffort === 'string'
     ? candidate.reasoningEffort
     : ''
-  const maxToolCalls = (
-    typeof candidate.maxToolCalls === 'number'
-    && Number.isInteger(candidate.maxToolCalls)
-    && candidate.maxToolCalls >= MIN_TOOL_CALLS_PER_RUN
-    && candidate.maxToolCalls <= MAX_TOOL_CALLS_PER_RUN
-  ) ? candidate.maxToolCalls : DEFAULT_TOOL_CALLS_PER_RUN
   return withSelectedModel({
     baseUrl: typeof candidate.baseUrl === 'string'
       ? candidate.baseUrl
@@ -296,7 +274,6 @@ function toOpenAIPublicSettings(value: unknown): OpenAIPublicSettings {
     models,
     model: requestedModel,
     reasoningEffort,
-    maxToolCalls,
   }, requestedModel)
 }
 
