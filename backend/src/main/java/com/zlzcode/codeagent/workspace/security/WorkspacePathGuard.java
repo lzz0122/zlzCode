@@ -72,6 +72,28 @@ public class WorkspacePathGuard {
         return target;
     }
 
+    /*
+     * 背景：mkdir(parents=true) 的多个尾部目录在准备阶段都可能不存在，但已有祖先仍属于工作区安全边界。
+     * 设计意图：逐段校验所有已存在路径并允许从首个缺失段开始待创建，而不是让 mkdir 绕过统一路径授权。
+     * 关键约束：已有段不能是符号链接或非目录；否则后续逐级创建可能越过工作区，或把审批范围落到错误位置。
+     */
+    public Path resolveCreationTarget(Path workspaceRoot, String relativePath) throws IOException {
+        Path root = canonicalDirectory(workspaceRoot);
+        Path target = resolveRelative(root, relativePath);
+        Path current = root;
+        for (Path segment : root.relativize(target)) {
+            current = current.resolve(segment);
+            if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) break;
+            if (Files.isSymbolicLink(current)) {
+                throw new FileSystemException(relativePath, null, "symbolic links are not supported");
+            }
+            if (!current.equals(target) && !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) {
+                throw new FileSystemException(relativePath, null, "path ancestor is not a directory");
+            }
+        }
+        return target;
+    }
+
     public String relativePath(Path workspaceRoot, Path value) throws IOException {
         Path root = canonicalDirectory(workspaceRoot);
         Path target = value.toAbsolutePath().normalize();

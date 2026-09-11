@@ -19,9 +19,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
@@ -30,7 +28,6 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
@@ -41,16 +38,19 @@ public final class WriteService implements MutationToolHandler {
     private final WorkspacePathGuard pathGuard;
     private final ToolProperties properties;
     private final RunFileObservationService observationService;
+    private final TextMutationSupport textMutationSupport;
 
     public WriteService(
             ObjectMapper objectMapper,
             WorkspacePathGuard pathGuard,
             ToolProperties properties,
-            RunFileObservationService observationService) {
+            RunFileObservationService observationService,
+            TextMutationSupport textMutationSupport) {
         this.objectMapper = objectMapper;
         this.pathGuard = pathGuard;
         this.properties = properties;
         this.observationService = observationService;
+        this.textMutationSupport = textMutationSupport;
     }
 
     @Override
@@ -101,7 +101,7 @@ public final class WriteService implements MutationToolHandler {
                             "The requested file is too large to replace.");
                 }
                 byte[] currentBytes = Files.readAllBytes(target);
-                decode(currentBytes);
+                textMutationSupport.decode(currentBytes);
                 observedSha256 = observationService.find(context, relative).orElse(null);
                 if (observedSha256 == null) {
                     return completedFailure("FILE_NOT_OBSERVED", "覆盖前需要先读取文件",
@@ -175,7 +175,7 @@ public final class WriteService implements MutationToolHandler {
                 }
             }
 
-            atomicWrite(target, newBytes, plan.targetExisted());
+            textMutationSupport.atomicWrite(target, newBytes, plan.targetExisted());
             observationService.forget(context, relative);
             WriteResult result = new WriteResult(
                     true, plan.targetExisted() ? "update" : "create", relative, newBytes.length);
@@ -227,23 +227,6 @@ public final class WriteService implements MutationToolHandler {
         return arguments;
     }
 
-    private void atomicWrite(Path target, byte[] bytes, boolean replace) throws IOException {
-        Path parent = target.getParent();
-        String prefix = "." + target.getFileName() + ".";
-        Path temporary = Files.createTempFile(parent, prefix, ".tmp");
-        try {
-            Files.write(temporary, bytes);
-            if (replace) {
-                Files.move(temporary, target,
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
-    }
-
     private String presentationSummary(String path, String content, int bytes, boolean existed) {
         String heading = (existed ? "将覆盖 " : "将创建 ") + path + "（" + bytes + " 字节）";
         if (content.isEmpty()) return heading + "\n\n<empty file>";
@@ -253,13 +236,6 @@ public final class WriteService implements MutationToolHandler {
         String suffix = "\n…预览已截断";
         int contentLimit = Math.max(0, limit - suffix.length());
         return summary.substring(0, contentLimit) + suffix.substring(0, limit - contentLimit);
-    }
-
-    private String decode(byte[] bytes) throws CharacterCodingException {
-        return StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(bytes)).toString();
     }
 
     private WriteArguments parse(String arguments) {
