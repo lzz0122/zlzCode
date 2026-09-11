@@ -29,7 +29,6 @@ public final class ReActContext {
     private final List<String> outstandingCallIds = new ArrayList<>();
     private final List<ToolExecutionRecord> toolExecutions = new ArrayList<>();
     private int modelSteps;
-    private int toolCallsUsed;
     private Integer inputTokens;
     private Integer outputTokens;
     private String finalAnswer;
@@ -66,10 +65,6 @@ public final class ReActContext {
         return List.copyOf(messages);
     }
 
-    public boolean canExecuteTool() {
-        return toolCallsUsed < execution.options().maxToolCalls();
-    }
-
     /*
      * 背景：Agent 可能经过多轮模型请求，最终指标必须覆盖整个 Run，而不能只记录最后一轮。
      * 设计意图：在每轮结果收口后统一累积步骤和用量，流程方法只负责根据结果推进状态。
@@ -98,13 +93,12 @@ public final class ReActContext {
     /*
      * 背景：工具结果既要按原 call ID 回灌给下一轮模型，也要在 Run 成功时投影到 Session 和 SSE。
      * 设计意图：在 Context 内一次完成消息状态和唯一工具记录的更新，避免两个输出列表分别维护。
-     * 关键约束：只有工具执行成功返回结果后才能调用，必须先追加 tool 消息再增加调用计数。
+     * 关键约束：只有工具执行返回最终结果后才能调用，且结果必须严格匹配当前批次的模型调用顺序。
      */
     public void recordToolExecution(LlmToolCall call, ToolOutcome outcome) {
         Objects.requireNonNull(call, "LLM tool call cannot be null");
         Objects.requireNonNull(outcome, "Tool outcome cannot be null");
         appendToolResult(call.id(), outcome.modelContent());
-        toolCallsUsed++;
         toolExecutions.add(new ToolExecutionRecord(
                 call.name(),
                 call.arguments() == null ? "" : call.arguments(),

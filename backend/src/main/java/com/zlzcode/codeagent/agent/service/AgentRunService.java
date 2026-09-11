@@ -61,7 +61,6 @@ public class AgentRunService {
                 new RunExecution.RunOptions(
                         request.model(),
                         request.reasoningEffort(),
-                        request.maxToolCalls(),
                         request.openai()));
         runExecutor.start(execution);
         return RunResponse.from(record);
@@ -78,7 +77,7 @@ public class AgentRunService {
     private String fingerprint(AgentRunRequest request) {
         String value = String.join("\u0000", request.sessionId(), request.prompt(), request.model(),
                 request.reasoningEffort() == null ? "" : request.reasoningEffort(),
-                String.valueOf(request.maxToolCalls()), request.openai().baseUrl(), request.openai().apiKey());
+                request.openai().baseUrl(), request.openai().apiKey());
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8));

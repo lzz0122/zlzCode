@@ -32,15 +32,11 @@ public record RunExecution(
     public record RunOptions(
             String model,
             String reasoningEffort,
-            int maxToolCalls,
             OpenAiConnectionInput openai) {
 
         public RunOptions {
             if (model == null || model.isBlank()) {
                 throw new IllegalArgumentException("Run model cannot be blank");
-            }
-            if (maxToolCalls < 1) {
-                throw new IllegalArgumentException("Run max tool calls must be positive");
             }
             openai = Objects.requireNonNull(openai, "Run OpenAI connection cannot be null");
         }
