@@ -1,9 +1,6 @@
 export type ThemePreference = 'light' | 'dark' | 'system'
 
 export const MAX_PROMPT_LENGTH = 20_000
-export const MIN_TOOL_CALLS_PER_RUN = 1
-export const DEFAULT_TOOL_CALLS_PER_RUN = 5
-export const MAX_TOOL_CALLS_PER_RUN = 15
 
 export interface OpenAIModel {
   id: string
@@ -36,7 +33,6 @@ export interface OpenAIPublicSettings {
   models: OpenAIModel[]
   model: string
   reasoningEffort: string
-  maxToolCalls: number
 }
 
 export interface OpenAIConnectionInput {
@@ -148,7 +144,6 @@ export interface RunRequest {
   prompt: string
   model: string
   reasoningEffort?: string
-  maxToolCalls: number
   openai: OpenAIConnectionInput
 }
 

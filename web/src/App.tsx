@@ -17,9 +17,6 @@ import { Modal } from './components/Modal'
 import { Sidebar } from './components/Sidebar'
 import {
   createId,
-  DEFAULT_TOOL_CALLS_PER_RUN,
-  MAX_TOOL_CALLS_PER_RUN,
-  MIN_TOOL_CALLS_PER_RUN,
   titleFromPrompt,
   type Message,
   type OpenAIConnectionInput,
@@ -87,8 +84,7 @@ export function createOpenAIRunConfiguration(
   apiKey: string,
   model: string,
   reasoningEffort = '',
-  maxToolCalls = DEFAULT_TOOL_CALLS_PER_RUN,
-): Pick<RunRequest, 'model' | 'reasoningEffort' | 'maxToolCalls' | 'openai'> {
+): Pick<RunRequest, 'model' | 'reasoningEffort' | 'openai'> {
   const normalizedBaseUrl = normalizeOpenAIBaseUrl(baseUrl)
   const normalizedApiKey = apiKey.trim()
   if (!normalizedApiKey) throw new Error('请填写 OpenAI API Key')
@@ -105,17 +101,8 @@ export function createOpenAIRunConfiguration(
   if (normalizedReasoningEffort.length > 64) {
     throw new Error('推理强度名称不能超过 64 个字符')
   }
-  if (
-    !Number.isInteger(maxToolCalls)
-    || maxToolCalls < MIN_TOOL_CALLS_PER_RUN
-    || maxToolCalls > MAX_TOOL_CALLS_PER_RUN
-  ) {
-    throw new Error(`每次运行的工具调用上限必须是 ${MIN_TOOL_CALLS_PER_RUN}–${MAX_TOOL_CALLS_PER_RUN} 的整数`)
-  }
-
   return {
     model: normalizedModel,
-    maxToolCalls,
     openai,
     ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
   }
@@ -126,10 +113,9 @@ export function isOpenAIRunConfigured(
   apiKey: string,
   model: string,
   reasoningEffort = '',
-  maxToolCalls = DEFAULT_TOOL_CALLS_PER_RUN,
 ): boolean {
   try {
-    createOpenAIRunConfiguration(baseUrl, apiKey, model, reasoningEffort, maxToolCalls)
+    createOpenAIRunConfiguration(baseUrl, apiKey, model, reasoningEffort)
     return true
   } catch {
     return false
@@ -211,7 +197,6 @@ export default function App() {
     apiKey,
     state.openai.model,
     state.openai.reasoningEffort,
-    state.openai.maxToolCalls,
   )
 
   useEffect(() => saveState(state), [state])
@@ -312,14 +297,13 @@ export default function App() {
       || workspacePickerRequest.current !== null
     ) return
 
-    let runConfiguration: Pick<RunRequest, 'model' | 'reasoningEffort' | 'maxToolCalls' | 'openai'>
+    let runConfiguration: Pick<RunRequest, 'model' | 'reasoningEffort' | 'openai'>
     try {
       runConfiguration = createOpenAIRunConfiguration(
         state.openai.baseUrl,
         apiKey,
         state.openai.model,
         state.openai.reasoningEffort,
-        state.openai.maxToolCalls,
       )
     } catch (error) {
       setModelFetchFeedback({
@@ -607,33 +591,7 @@ export default function App() {
                     <small>通过 HTTP/SSE 接收 Python Agent 事件；运行状态会在发起请求时反馈。</small>
                   </div>
                 </div>
-                <label className="settingsField">
-                  <span>每次运行最大工具调用数</span>
-                  <input
-                    aria-label="每次运行最大工具调用数"
-                    inputMode="numeric"
-                    max={MAX_TOOL_CALLS_PER_RUN}
-                    min={MIN_TOOL_CALLS_PER_RUN}
-                    onChange={event => {
-                      const maxToolCalls = event.currentTarget.valueAsNumber
-                      if (
-                        Number.isInteger(maxToolCalls)
-                        && maxToolCalls >= MIN_TOOL_CALLS_PER_RUN
-                        && maxToolCalls <= MAX_TOOL_CALLS_PER_RUN
-                      ) {
-                        dispatch({ type: 'settings/max-tool-calls', maxToolCalls })
-                      }
-                    }}
-                    step={1}
-                    type="number"
-                    value={state.openai.maxToolCalls}
-                  />
-                </label>
               </div>
-              <p className="settingsHint">
-                可设置 {MIN_TOOL_CALLS_PER_RUN}–{MAX_TOOL_CALLS_PER_RUN}，默认 {DEFAULT_TOOL_CALLS_PER_RUN}。
-                超出额度的调用不会执行，而会作为 <code>TOOL_CALL_LIMIT_EXCEEDED</code> 失败结果返回模型继续处理。
-              </p>
             </section>
 
             <section className="settingsSection">
